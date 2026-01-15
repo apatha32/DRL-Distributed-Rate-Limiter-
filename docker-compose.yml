@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: drl-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: drl-postgres
+    environment:
+      POSTGRES_DB: ratelimiter
+      POSTGRES_USER: ratelimiter
+      POSTGRES_PASSWORD: ratelimiter
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ratelimiter"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: drl-jaeger
+    environment:
+      COLLECTOR_ZIPKIN_HOST_PORT: :9411
+    ports:
+      - "6831:6831/udp"  # Jaeger agent
+      - "16686:16686"    # Jaeger UI
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:14269/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  limiter-1:
+    build: .
+    container_name: limiter-1
+    ports:
+      - "8001:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DATABASE_URL=postgresql://ratelimiter:ratelimiter@postgres:5432/ratelimiter
+      - SERVICE_NAME=limiter-1
+      - FAIL_MODE=open
+      - JAEGER_ENABLED=true
+      - JAEGER_HOST=jaeger
+      - JAEGER_PORT=6831
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    networks:
+      - drl-network
+
+  limiter-2:
+    build: .
+    container_name: limiter-2
+    ports:
+      - "8002:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DATABASE_URL=postgresql://ratelimiter:ratelimiter@postgres:5432/ratelimiter
+      - SERVICE_NAME=limiter-2
+      - FAIL_MODE=open
+      - JAEGER_ENABLED=true
+      - JAEGER_HOST=jaeger
+      - JAEGER_PORT=6831
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    networks:
+      - drl-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: drl-nginx
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - limiter-1
+      - limiter-2
+    networks:
+      - drl-network
+
+volumes:
+  redis_data:
+  postgres_data:
+
+networks:
+  drl-network:
+    driver: bridge
