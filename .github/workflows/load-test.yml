@@ -55,8 +55,9 @@ jobs:
         python -c "
         import socket
         import time
+        import subprocess
         
-        def check_service(host, port, name, max_retries=30):
+        def check_service(host, port, name, max_retries=40):
             for i in range(max_retries):
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -68,49 +69,94 @@ jobs:
                         return True
                 except Exception as e:
                     pass
+                if i % 10 == 0:
+                    print(f'  Waiting for {name}... ({i}s)')
                 time.sleep(1)
             print(f'✗ {name} ({host}:{port}) failed to start')
             return False
         
-        all_ready = all([
-            check_service('localhost', 6379, 'Redis'),
-            check_service('localhost', 5432, 'PostgreSQL'),
-        ])
-        exit(0 if all_ready else 1)
+        # Check basic port connectivity
+        redis_ok = check_service('localhost', 6379, 'Redis')
+        postgres_ok = check_service('localhost', 5432, 'PostgreSQL')
+        
+        if not postgres_ok:
+            exit(1)
+        
+        # Test PostgreSQL connection with psycopg2
+        print('Testing PostgreSQL connection...')
+        try:
+            import psycopg2
+            for i in range(20):
+                try:
+                    conn = psycopg2.connect(
+                        host='localhost',
+                        port=5432,
+                        user='ratelimiter',
+                        password='ratelimiter',
+                        database='ratelimiter'
+                    )
+                    conn.close()
+                    print('✓ PostgreSQL is accepting connections')
+                    exit(0)
+                except psycopg2.OperationalError as e:
+                    if i < 19:
+                        print(f'  PostgreSQL not ready, retrying... ({i+1}/20)')
+                        time.sleep(1)
+                    else:
+                        print(f'✗ PostgreSQL connection failed: {e}')
+                        exit(1)
+        except ImportError:
+            print('psycopg2 not available, skipping detailed check')
+            exit(0 if postgres_ok and redis_ok else 1)
         "
 
     - name: Start FastAPI application
       run: |
         nohup python -u -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > /tmp/uvicorn.log 2>&1 &
-        sleep 3
+        sleep 2
       env:
         REDIS_HOST: localhost
         REDIS_PORT: 6379
         DATABASE_URL: postgresql://ratelimiter:ratelimiter@localhost:5432/ratelimiter
         PYTHONUNBUFFERED: 1
 
-    - name: Check application startup
+    - name: Check application logs and process
       run: |
-        cat /tmp/uvicorn.log || echo "No uvicorn log found"
-        sleep 2
+        echo "=== Uvicorn startup logs (first 50 lines) ==="
+        head -50 /tmp/uvicorn.log || echo "No logs yet"
+        echo ""
+        echo "=== Running processes ==="
+        ps aux | grep -E 'uvicorn|python' | grep -v grep || echo "No matching processes"
+        sleep 1
+
+    - name: Wait for application ready
+      run: |
         python -c "
         import socket
         import time
+        import sys
         
-        for i in range(30):
+        print('Waiting for application on port 8000...')
+        for i in range(40):
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.settimeout(1)
                 result = s.connect_ex(('localhost', 8000))
                 s.close()
                 if result == 0:
-                    print('✓ Application is ready on port 8000')
-                    exit(0)
+                    print(f'✓ Application is ready on port 8000 (attempt {i+1})')
+                    sys.exit(0)
             except Exception as e:
                 pass
+            if i % 10 == 0:
+                print(f'  Waiting... ({i+1}/40 seconds)')
             time.sleep(1)
-        print('✗ Application failed to start')
-        exit(1)
+        
+        print('✗ Application failed to respond on port 8000')
+        print('Last log entries:')
+        import subprocess
+        subprocess.run(['tail', '-20', '/tmp/uvicorn.log'])
+        sys.exit(1)
         "
 
     - name: Run load tests with Locust
