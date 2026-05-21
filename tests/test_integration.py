@@ -15,7 +15,7 @@ import sys
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.main import app, init_db_from_session
+from src.main import app
 from src.database import Base, RateLimitRule
 
 
