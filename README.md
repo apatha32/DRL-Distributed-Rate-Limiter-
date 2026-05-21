@@ -2,6 +2,15 @@
 
 Production-grade distributed rate limiting service with circuit breaker resilience, distributed tracing, and comprehensive observability. Built for modern backend systems handling 10K+ requests/second.
 
+## ✅ CI/CD Status
+
+![Tests](https://github.com/apatha32/DRL-Distributed-Rate-Limiter-/workflows/Tests/badge.svg?branch=main)
+![Lint & Code Quality](https://github.com/apatha32/DRL-Distributed-Rate-Limiter-/workflows/Lint%20&%20Code%20Quality/badge.svg?branch=main)
+![Docker Build & Push](https://github.com/apatha32/DRL-Distributed-Rate-Limiter-/workflows/Docker%20Build%20&%20Push/badge.svg?branch=main)
+![Security Checks](https://github.com/apatha32/DRL-Distributed-Rate-Limiter-/workflows/Security%20Checks/badge.svg?branch=main)
+
+📖 See [CI/CD Setup Guide](.github/CI-CD-SETUP.md) for workflow details and [Quick Reference](.github/QUICK-REFERENCE.md) for common tasks.
+
 ## 📊 What You Get
 
 **3 Rate Limiting Algorithms**
