@@ -40,7 +40,7 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
         cache: 'pip'
@@ -161,7 +161,8 @@ jobs:
 
     - name: Run load tests with Locust
       run: |
-        pytest tests/load_test.py -v --tb=short || true
+        # Run Locust in headless mode, single user, 1 spawn rate, 30 seconds
+        locust -f tests/load_test.py --headless --users 10 --spawn-rate 5 --run-time 30s --host http://localhost:8000 --csv=load-test-results || true
       env:
         REDIS_HOST: localhost
         REDIS_PORT: 6379
@@ -171,6 +172,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: load-test-results
+        name: |
+          load-test-results*.csvs
         path: load-test-*.html
         retention-days: 30
