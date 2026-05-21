@@ -50,31 +50,67 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Verify services connectivity
+      run: |
+        python -c "
+        import socket
+        import time
+        
+        def check_service(host, port, name, max_retries=30):
+            for i in range(max_retries):
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(1)
+                    result = s.connect_ex((host, port))
+                    s.close()
+                    if result == 0:
+                        print(f'✓ {name} ({host}:{port}) is ready')
+                        return True
+                except Exception as e:
+                    pass
+                time.sleep(1)
+            print(f'✗ {name} ({host}:{port}) failed to start')
+            return False
+        
+        all_ready = all([
+            check_service('localhost', 6379, 'Redis'),
+            check_service('localhost', 5432, 'PostgreSQL'),
+        ])
+        exit(0 if all_ready else 1)
+        "
+
     - name: Start FastAPI application
       run: |
-        nohup uvicorn src.main:app --host 0.0.0.0 --port 8000 > /tmp/uvicorn.log 2>&1 &
-        sleep 2
+        nohup python -u -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > /tmp/uvicorn.log 2>&1 &
+        sleep 3
       env:
         REDIS_HOST: localhost
         REDIS_PORT: 6379
         DATABASE_URL: postgresql://ratelimiter:ratelimiter@localhost:5432/ratelimiter
+        PYTHONUNBUFFERED: 1
 
-    - name: Wait for application
+    - name: Check application startup
       run: |
+        cat /tmp/uvicorn.log || echo "No uvicorn log found"
+        sleep 2
         python -c "
-        import time
         import socket
-        import sys
+        import time
         
         for i in range(30):
             try:
-                socket.create_connection(('localhost', 8000), timeout=1)
-                print('✓ Application is ready')
-                sys.exit(0)
-            except (socket.timeout, ConnectionRefusedError):
-                time.sleep(1)
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(1)
+                result = s.connect_ex(('localhost', 8000))
+                s.close()
+                if result == 0:
+                    print('✓ Application is ready on port 8000')
+                    exit(0)
+            except Exception as e:
+                pass
+            time.sleep(1)
         print('✗ Application failed to start')
-        sys.exit(1)
+        exit(1)
         "
 
     - name: Run load tests with Locust

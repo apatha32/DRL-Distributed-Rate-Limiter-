@@ -61,21 +61,25 @@ jobs:
 
     - name: Wait for services
       run: |
-        pip install psycopg2-binary
         python -c "
         import time
         import socket
         import sys
         
-        def wait_for_service(host, port, service_name, max_retries=30):
+        def wait_for_service(host, port, service_name, max_retries=40):
             for i in range(max_retries):
                 try:
-                    socket.create_connection((host, port), timeout=1)
-                    print(f'✓ {service_name} is ready')
-                    return True
-                except (socket.timeout, ConnectionRefusedError):
-                    time.sleep(1)
-            print(f'✗ {service_name} failed to start')
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(1)
+                    result = s.connect_ex((host, port))
+                    s.close()
+                    if result == 0:
+                        print(f'✓ {service_name} ({host}:{port}) is ready')
+                        return True
+                except Exception as e:
+                    pass
+                time.sleep(1)
+            print(f'✗ {service_name} ({host}:{port}) failed to start after {max_retries}s')
             return False
         
         services_ok = all([
