@@ -29,7 +29,7 @@ jobs:
           POSTGRES_USER: ratelimiter
           POSTGRES_PASSWORD: ratelimiter
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U ratelimiter"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -52,7 +52,8 @@ jobs:
 
     - name: Start FastAPI application
       run: |
-        uvicorn src.main:app --host 0.0.0.0 --port 8000 &
+        nohup uvicorn src.main:app --host 0.0.0.0 --port 8000 > /tmp/uvicorn.log 2>&1 &
+        sleep 2
       env:
         REDIS_HOST: localhost
         REDIS_PORT: 6379

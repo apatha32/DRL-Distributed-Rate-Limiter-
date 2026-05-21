@@ -35,7 +35,7 @@ jobs:
 
     - name: Check dependencies for known vulnerabilities
       run: |
-        safety check --json || true
+        safety check || true
 
     - name: Upload security reports
       if: always()
