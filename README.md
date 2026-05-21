@@ -7,9 +7,18 @@ Production-grade distributed rate limiting service with circuit breaker resilien
 ![Tests](https://github.com/apatha32/DRL-Distributed-Rate-Limiter-/workflows/Tests/badge.svg?branch=main)
 ![Lint & Code Quality](https://github.com/apatha32/DRL-Distributed-Rate-Limiter-/workflows/Lint%20&%20Code%20Quality/badge.svg?branch=main)
 ![Docker Build & Push](https://github.com/apatha32/DRL-Distributed-Rate-Limiter-/workflows/Docker%20Build%20&%20Push/badge.svg?branch=main)
+![Load Testing](https://github.com/apatha32/DRL-Distributed-Rate-Limiter-/workflows/Load%20Testing/badge.svg?branch=main)
 ![Security Checks](https://github.com/apatha32/DRL-Distributed-Rate-Limiter-/workflows/Security%20Checks/badge.svg?branch=main)
 
-📖 See [CI/CD Setup Guide](.github/CI-CD-SETUP.md) for workflow details and [Quick Reference](.github/QUICK-REFERENCE.md) for common tasks.
+### Automated Workflows
+Every push triggers:
+- **Tests** - Unit & integration tests with Redis, PostgreSQL, Jaeger
+- **Lint & Code Quality** - flake8, black, isort, pylint checks
+- **Docker Build & Push** - Auto-builds and pushes to GHCR on main branch
+- **Load Testing** - Performance benchmarks with 10 concurrent users (30s duration)
+- **Security Checks** - Bandit & Safety vulnerability scans
+
+📖 **Documentation:** [CI/CD Setup Guide](.github/CI-CD-SETUP.md) | [Quick Reference](.github/QUICK-REFERENCE.md) | [Badges & Status](.github/BADGES.md)
 
 ## 📊 What You Get
 
