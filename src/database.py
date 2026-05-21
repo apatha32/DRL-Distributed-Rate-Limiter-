@@ -31,7 +31,7 @@ class RateLimitRule(Base):
     rate = Column(Integer, nullable=False)  # Requests per window
     window = Column(Integer, nullable=False)  # Time window in seconds
     enabled = Column(Boolean, default=True)
-    metadata = Column(JSON, default=dict)  # Additional data
+    meta_json = Column(JSON, default=dict)  # Additional metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

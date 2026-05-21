@@ -122,11 +122,14 @@ jobs:
     - name: Run unit tests
       run: |
         pytest tests/test_algorithms.py -v --tb=short
+      env:
+        PYTHONPATH: ${{ github.workspace }}
 
     - name: Run integration tests
       run: |
         pytest tests/test_integration.py -v --tb=short
       env:
+        PYTHONPATH: ${{ github.workspace }}
         REDIS_HOST: localhost
         REDIS_PORT: 6379
         DATABASE_URL: postgresql://ratelimiter:ratelimiter@localhost:5432/ratelimiter
