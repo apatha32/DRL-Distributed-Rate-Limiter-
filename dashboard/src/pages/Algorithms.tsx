@@ -221,7 +221,7 @@ export default function Algorithms() {
         redis.zadd(key, {now: now})
         return True
     
-    return False`}</code>
+    return False`}`}</code>
         </pre>
       </div>
 

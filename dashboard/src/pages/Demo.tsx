@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Play, Pause, RotateCcw, Zap } from 'lucide-react'
 
 interface RequestEvent {
@@ -10,56 +10,149 @@ interface RequestEvent {
   latency: number
 }
 
+interface RateLimiterState {
+  tokenBucket: number  // Global tokens
+  fixedWindow: { count: number; windowStart: number }
+  slidingWindow: number[]  // Global timestamps
+}
+
 export default function Demo() {
   const [isRunning, setIsRunning] = useState(false)
   const [algorithm, setAlgorithm] = useState<'token-bucket' | 'fixed-window' | 'sliding-window'>('token-bucket')
-  const [requestsPerSecond, setRequestsPerSecond] = useState(100)
-  const [rateLimit, setRateLimit] = useState(1000)
+  const [requestsPerSecond, setRequestsPerSecond] = useState(50)
+  const [rateLimit, setRateLimit] = useState(100)
   const [events, setEvents] = useState<RequestEvent[]>([])
   const [stats, setStats] = useState({
     total: 0,
     allowed: 0,
     blocked: 0,
   })
+  
+  const limiterStateRef = useRef<RateLimiterState>({
+    tokenBucket: 0,
+    fixedWindow: { count: 0, windowStart: Date.now() },
+    slidingWindow: [],
+  })
+
+  // Check rate limit based on algorithm (GLOBAL rate limit)
+  const checkRateLimit = (now: number): boolean => {
+    const state = limiterStateRef.current
+
+    if (algorithm === 'token-bucket') {
+      // Token bucket: global refilling bucket
+      if (state.tokenBucket >= 1) {
+        state.tokenBucket -= 1
+        return true
+      }
+      return false
+    }
+
+    if (algorithm === 'fixed-window') {
+      // Fixed window: global 1-second window
+      const currentWindow = Math.floor(now / 1000)
+      const stateWindow = Math.floor(state.fixedWindow.windowStart / 1000)
+      
+      if (currentWindow !== stateWindow) {
+        // New window, reset count
+        state.fixedWindow = { count: 1, windowStart: now }
+        return true
+      }
+      
+      if (state.fixedWindow.count < rateLimit) {
+        state.fixedWindow.count++
+        return true
+      }
+      return false
+    }
+
+    if (algorithm === 'sliding-window') {
+      // Sliding window: global 1-second window
+      const windowStart = now - 1000
+      
+      // Remove old timestamps outside window
+      state.slidingWindow = state.slidingWindow.filter(ts => ts > windowStart)
+      
+      if (state.slidingWindow.length < rateLimit) {
+        state.slidingWindow.push(now)
+        return true
+      }
+      
+      return false
+    }
+
+    return true
+  }
+
+  // Refill tokens for token bucket algorithm
+  useEffect(() => {
+    if (algorithm !== 'token-bucket' || !isRunning) return
+
+    limiterStateRef.current.tokenBucket = rateLimit // Start with full bucket
+
+    const refillInterval = setInterval(() => {
+      const state = limiterStateRef.current
+      const tokensToAdd = Math.max(1, Math.ceil(rateLimit / 10)) // Add tokens to maintain rate
+      state.tokenBucket = Math.min(rateLimit, state.tokenBucket + tokensToAdd)
+    }, 100)
+
+    return () => clearInterval(refillInterval)
+  }, [algorithm, isRunning, rateLimit])
 
   useEffect(() => {
     if (!isRunning) return
 
     const interval = setInterval(() => {
+      const now = Date.now()
       const rps = Math.floor(requestsPerSecond / 10)
       const newEvents: RequestEvent[] = []
+      let allowedCount = 0
+      let blockedCount = 0
 
       for (let i = 0; i < rps; i++) {
-        const random = Math.random()
-        const allowed = random > (stats.blocked / (stats.total + 1))
+        const clientId = `client_${Math.floor(Math.random() * 5)}`
+        const allowed = checkRateLimit(now)
+        
         const latency = algorithm === 'fixed-window' ? 0.8 : algorithm === 'token-bucket' ? 1.2 : 2.3
         const jitter = (Math.random() - 0.5) * 0.5
 
         newEvents.push({
           id: stats.total + i,
-          clientId: `client_${Math.floor(Math.random() * 5)}`,
+          clientId,
           algorithm,
           allowed,
-          timestamp: Date.now(),
+          timestamp: now,
           latency: Math.max(0.1, latency + jitter),
         })
+
+        if (allowed) allowedCount++
+        else blockedCount++
       }
 
       setEvents(prev => [...newEvents, ...prev].slice(0, 50))
       setStats(prev => ({
         total: prev.total + rps,
-        allowed: prev.allowed + newEvents.filter(e => e.allowed).length,
-        blocked: prev.blocked + newEvents.filter(e => !e.allowed).length,
+        allowed: prev.allowed + allowedCount,
+        blocked: prev.blocked + blockedCount,
       }))
     }, 100)
 
     return () => clearInterval(interval)
-  }, [isRunning, algorithm, requestsPerSecond, stats])
+  }, [isRunning, algorithm, requestsPerSecond, rateLimit])
 
   const reset = () => {
     setEvents([])
     setStats({ total: 0, allowed: 0, blocked: 0 })
     setIsRunning(false)
+    limiterStateRef.current = {
+      tokenBucket: 0,
+      fixedWindow: { count: 0, windowStart: Date.now() },
+      slidingWindow: [],
+    }
+  }
+
+  const handleAlgorithmChange = (newAlgo: any) => {
+    setAlgorithm(newAlgo)
+    reset()
   }
 
   const blockRate = stats.total > 0 ? ((stats.blocked / stats.total) * 100).toFixed(2) : 0
@@ -82,10 +175,7 @@ export default function Demo() {
             <label className="block text-sm font-medium text-slate-300 mb-2">Algorithm</label>
             <select
               value={algorithm}
-              onChange={(e) => {
-                setAlgorithm(e.target.value as any)
-                reset()
-              }}
+              onChange={(e) => handleAlgorithmChange(e.target.value as any)}
               className="w-full px-4 py-2 rounded-lg bg-slate-700 text-white border border-slate-600 focus:border-cyan-500 focus:outline-none transition"
             >
               <option value="token-bucket">Token Bucket</option>
