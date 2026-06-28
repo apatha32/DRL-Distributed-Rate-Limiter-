@@ -23,6 +23,10 @@ export const api = {
   // Health
   getHealth: () =>
     axios.get(`${API_BASE}/health`),
+
+  // RL Agent
+  getRLDiagnostics: (clientId: string) =>
+    axios.get(`${API_BASE}/rl/diagnostics/${clientId}`),
 }
 
 export default api

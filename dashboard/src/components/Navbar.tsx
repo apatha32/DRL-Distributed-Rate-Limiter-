@@ -1,9 +1,9 @@
 import React from 'react'
-import { Activity, BarChart3, Zap, Settings, Moon, Sun } from 'lucide-react'
+import { Activity, BarChart3, Zap, Settings, Moon, Sun, Brain } from 'lucide-react'
 
 interface NavbarProps {
-  currentPage: 'dashboard' | 'algorithms' | 'metrics' | 'demo'
-  setCurrentPage: (page: 'dashboard' | 'algorithms' | 'metrics' | 'demo') => void
+  currentPage: 'dashboard' | 'algorithms' | 'metrics' | 'demo' | 'ai'
+  setCurrentPage: (page: 'dashboard' | 'algorithms' | 'metrics' | 'demo' | 'ai') => void
   isDark: boolean
   setIsDark: (dark: boolean) => void
 }
@@ -14,6 +14,7 @@ export default function Navbar({ currentPage, setCurrentPage, isDark, setIsDark 
     { id: 'algorithms', label: 'Algorithms', icon: BarChart3 },
     { id: 'metrics', label: 'Metrics', icon: Zap },
     { id: 'demo', label: 'Demo', icon: Settings },
+    { id: 'ai', label: 'AI Agent', icon: Brain },
   ]
 
   return (

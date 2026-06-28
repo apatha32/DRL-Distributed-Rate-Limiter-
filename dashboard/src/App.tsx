@@ -4,8 +4,9 @@ import Dashboard from './pages/Dashboard'
 import Algorithms from './pages/Algorithms'
 import MetricsDetail from './pages/MetricsDetail'
 import Demo from './pages/Demo'
+import AIAgent from './pages/AIAgent'
 
-type Page = 'dashboard' | 'algorithms' | 'metrics' | 'demo'
+type Page = 'dashboard' | 'algorithms' | 'metrics' | 'demo' | 'ai'
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard')
@@ -21,6 +22,7 @@ function App() {
           {currentPage === 'algorithms' && <Algorithms />}
           {currentPage === 'metrics' && <MetricsDetail />}
           {currentPage === 'demo' && <Demo />}
+          {currentPage === 'ai' && <AIAgent />}
         </main>
 
         {/* Footer */}
@@ -37,6 +39,7 @@ function App() {
                   <li><a href="#" className="hover:text-cyan-400 transition">Real-time Metrics</a></li>
                   <li><a href="#" className="hover:text-cyan-400 transition">Algorithm Visualization</a></li>
                   <li><a href="#" className="hover:text-cyan-400 transition">Performance Monitoring</a></li>
+                  <li><a href="#" className="hover:text-cyan-400 transition">AI Adaptive Agent</a></li>
                 </ul>
               </div>
               <div>
