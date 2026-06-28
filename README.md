@@ -1,12 +1,12 @@
 ---
 title: DRL - Distributed Rate Limiter
 colorFrom: blue
-colorTo: cyan
+colorTo: indigo
 sdk: docker
 app_port: 7860
 pinned: true
 license: mit
-short_description: Production-grade distributed rate limiter with Q-learning adaptive limits
+short_description: Rate limiter with Q-learning adaptive AI limits
 ---
 
 # DRL - Distributed Rate Limiter
