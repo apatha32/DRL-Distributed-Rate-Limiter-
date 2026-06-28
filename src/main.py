@@ -18,12 +18,14 @@ from src.config import (
     LOG_LEVEL,
     FAIL_MODE,
     ALGORITHM,
+    ENABLE_RL,
     FailMode,
     RateLimitAlgorithm,
     DEFAULT_RATE_LIMIT_RULES,
 )
 from src.redis_client import get_redis_client, RedisClient
 from src.algorithms import TokenBucketLimiter, FixedWindowLimiter, SlidingWindowLimiter
+from src.adaptive_limiter import RLAdaptiveLimiter
 from src.circuit_breaker import CircuitBreaker, CircuitBreakerOpen
 from src.correlation import CorrelationIDMiddleware, setup_logging_with_correlation
 from src.tracing import init_tracing, instrument_app
@@ -41,6 +43,7 @@ from src.models import (
     UpdateRuleRequest,
     RuleInfo,
     HealthResponse,
+    RLDiagnosticsResponse,
 )
 
 # Configure logging with correlation IDs
@@ -106,13 +109,14 @@ def get_limiter():
         def _get_limiter():
             redis_client = get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
             if ALGORITHM == RateLimitAlgorithm.TOKEN_BUCKET:
-                return TokenBucketLimiter(redis_client)
+                base = TokenBucketLimiter(redis_client)
             elif ALGORITHM == RateLimitAlgorithm.FIXED_WINDOW:
-                return FixedWindowLimiter(redis_client)
+                base = FixedWindowLimiter(redis_client)
             elif ALGORITHM == RateLimitAlgorithm.SLIDING_WINDOW:
-                return SlidingWindowLimiter(redis_client)
+                base = SlidingWindowLimiter(redis_client)
             else:
                 raise ValueError(f"Unknown algorithm: {ALGORITHM}")
+            return RLAdaptiveLimiter(base) if ENABLE_RL else base
         
         return redis_circuit_breaker.call(_get_limiter)
     except CircuitBreakerOpen as e:
@@ -319,6 +323,24 @@ async def metrics():
 async def get_rules():
     """Get current rate limit rules."""
     return rate_limit_rules
+
+
+@app.get("/v1/rl/diagnostics/{client_id}", response_model=RLDiagnosticsResponse, tags=["RL"])
+async def rl_diagnostics(client_id: str):
+    """
+    Return RL agent diagnostics for a specific client.
+    Only populated when ENABLE_RL=true.
+    """
+    if not ENABLE_RL:
+        return RLDiagnosticsResponse(client_id=client_id, rl_enabled=False)
+
+    from src.rl_agent import get_agent
+    diag = get_agent().get_diagnostics(client_id)
+    return RLDiagnosticsResponse(
+        client_id=client_id,
+        rl_enabled=True,
+        **diag,
+    )
 
 
 @app.get("/circuit-breaker-status", tags=["Diagnostics"])

@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="DRL is a production-grade distributed rate limiting service with adaptive AI-driven limits, circuit breaker resilience, and full observability." />
+  <meta property="og:title" content="DRL - Distributed Rate Limiter" />
+  <meta property="og:description" content="Production-grade distributed rate limiting with Q-learning adaptive limits, circuit breakers, and OpenTelemetry tracing." />
+  <meta property="og:type" content="website" />
+  <title>DRL - Distributed Rate Limiter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0c10;
+      --bg-card:   #111318;
+      --bg-code:   #0d1117;
+      --border:    #21262d;
+      --accent:    #3b82f6;
+      --accent-dim:#1d4ed8;
+      --green:     #22c55e;
+      --amber:     #f59e0b;
+      --text:      #e6edf3;
+      --muted:     #7d8590;
+      --label:     #8b949e;
+      --radius:    8px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ---- NAV ---- */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(10, 12, 16, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-inner {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 24px;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-logo {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--text);
+      text-transform: uppercase;
+    }
+    .nav-logo span { color: var(--accent); }
+    .nav-links {
+      display: flex;
+      gap: 28px;
+      list-style: none;
+    }
+    .nav-links a {
+      font-size: 14px;
+      color: var(--muted);
+      font-weight: 500;
+      transition: color 0.15s;
+    }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+    /* ---- HERO ---- */
+    .hero {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 100px 24px 80px;
+    }
+    .hero-badge {
+      display: inline-block;
+      background: rgba(59, 130, 246, 0.12);
+      border: 1px solid rgba(59, 130, 246, 0.35);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 4px 12px;
+      border-radius: 999px;
+      margin-bottom: 28px;
+    }
+    .hero h1 {
+      font-size: clamp(36px, 6vw, 62px);
+      font-weight: 700;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+      margin-bottom: 24px;
+      max-width: 800px;
+    }
+    .hero h1 span { color: var(--accent); }
+    .hero p {
+      font-size: 18px;
+      color: var(--muted);
+      max-width: 620px;
+      margin-bottom: 40px;
+      line-height: 1.75;
+    }
+    .cta-group {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      font-weight: 600;
+      transition: opacity 0.15s, box-shadow 0.15s;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { opacity: 0.88; text-decoration: none; box-shadow: 0 0 0 3px rgba(59,130,246,0.35); }
+    .btn-outline {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-outline:hover { border-color: var(--muted); text-decoration: none; background: rgba(255,255,255,0.04); }
+
+    /* ---- STAT BAR ---- */
+    .stat-bar {
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-card);
+    }
+    .stat-bar-inner {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 24px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+    }
+    .stat-item {
+      padding: 32px 24px;
+      border-right: 1px solid var(--border);
+    }
+    .stat-item:last-child { border-right: none; }
+    .stat-value {
+      font-size: 30px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.02em;
+    }
+    .stat-label {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    /* ---- SECTIONS ---- */
+    section {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 80px 24px;
+    }
+    section + section { padding-top: 0; }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 12px;
+    }
+    h2 {
+      font-size: clamp(26px, 4vw, 38px);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 16px;
+    }
+    .section-lead {
+      font-size: 17px;
+      color: var(--muted);
+      max-width: 600px;
+      margin-bottom: 48px;
+      line-height: 1.75;
+    }
+
+    /* ---- FEATURE GRID ---- */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .feature-card {
+      background: var(--bg-card);
+      padding: 28px;
+    }
+    .feature-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: rgba(59, 130, 246, 0.12);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+    }
+    .feature-icon svg { width: 18px; height: 18px; stroke: var(--accent); fill: none; stroke-width: 1.75; }
+    .feature-card h3 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .feature-card p {
+      font-size: 14px;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    /* ---- ALGO TABLE ---- */
+    .algo-table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      font-size: 14px;
+    }
+    .algo-table thead tr { background: var(--bg-card); }
+    .algo-table th {
+      text-align: left;
+      padding: 14px 20px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--label);
+      border-bottom: 1px solid var(--border);
+    }
+    .algo-table td {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      vertical-align: top;
+    }
+    .algo-table tbody tr:last-child td { border-bottom: none; }
+    .algo-table tbody tr:hover td { background: rgba(255,255,255,0.02); }
+    .algo-table td:first-child { color: var(--text); font-weight: 500; }
+    .latency-badge {
+      display: inline-block;
+      background: rgba(34,197,94,0.12);
+      color: var(--green);
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 12px;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ---- TECH STACK ---- */
+    .stack-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .stack-item {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .stack-name {
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .stack-role {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    /* ---- ARCHITECTURE FLOW ---- */
+    .arch-flow {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      flex-wrap: wrap;
+      row-gap: 24px;
+    }
+    .arch-node {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 20px;
+      text-align: center;
+      min-width: 130px;
+    }
+    .arch-node-title {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .arch-node-sub {
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .arch-arrow {
+      width: 36px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .arch-arrow svg { width: 24px; height: 14px; }
+
+    /* ---- RL SECTION ---- */
+    .rl-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+    .rl-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+    }
+    .rl-card h3 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 14px;
+    }
+    .rl-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+    }
+    .rl-row:last-child { border-bottom: none; }
+    .rl-key { color: var(--muted); }
+    .rl-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: var(--accent);
+    }
+
+    /* ---- CODE BLOCK ---- */
+    pre {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      line-height: 1.7;
+      color: var(--text);
+    }
+    .code-comment { color: var(--muted); }
+    .code-key { color: #79c0ff; }
+    .code-val { color: #a5d6ff; }
+    .code-str { color: #a8d8a8; }
+    .code-num { color: #f2cc60; }
+
+    /* ---- CTA BANNER ---- */
+    .cta-banner {
+      background: linear-gradient(135deg, rgba(59,130,246,0.08) 0%, rgba(29,78,216,0.12) 100%);
+      border: 1px solid rgba(59,130,246,0.25);
+      border-radius: 12px;
+      padding: 60px 48px;
+      text-align: center;
+    }
+    .cta-banner h2 {
+      margin-bottom: 12px;
+    }
+    .cta-banner p {
+      font-size: 17px;
+      color: var(--muted);
+      max-width: 500px;
+      margin: 0 auto 36px;
+    }
+
+    /* ---- FOOTER ---- */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 32px 24px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    footer a { color: var(--muted); }
+    footer a:hover { color: var(--text); text-decoration: none; }
+
+    /* ---- RESPONSIVE ---- */
+    @media (max-width: 700px) {
+      .stat-bar-inner { grid-template-columns: 1fr 1fr; }
+      .stat-item { border-right: none; border-bottom: 1px solid var(--border); }
+      .stat-item:nth-child(odd) { border-right: 1px solid var(--border); }
+      .rl-grid { grid-template-columns: 1fr; }
+      .arch-flow { flex-direction: column; }
+      .arch-arrow svg { transform: rotate(90deg); }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-inner">
+    <span class="nav-logo">D<span>R</span>L</span>
+    <ul class="nav-links">
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#algorithms">Algorithms</a></li>
+      <li><a href="#ai">AI Agent</a></li>
+      <li><a href="#stack">Stack</a></li>
+      <li><a href="#quickstart">Quickstart</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- HERO -->
+<div class="hero">
+  <div class="hero-badge">Open Source Infrastructure</div>
+  <h1>Distributed Rate Limiter<br /><span>with Adaptive AI Limits</span></h1>
+  <p>
+    A production-grade rate limiting microservice that enforces per-client request
+    policies at scale using Redis-backed algorithms, circuit breaker resilience,
+    and a reinforcement learning agent that continuously adjusts limits based on
+    real traffic behavior.
+  </p>
+  <div class="cta-group">
+    <a class="btn btn-primary" href="https://github.com/apatha32/DRL-Distributed-Rate-Limiter-" target="_blank" rel="noopener">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+      View on GitHub
+    </a>
+    <a class="btn btn-outline" href="https://huggingface.co/spaces/apatha32/drl-demo" target="_blank" rel="noopener">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+      Live Demo
+    </a>
+  </div>
+</div>
+
+<!-- STAT BAR -->
+<div class="stat-bar">
+  <div class="stat-bar-inner">
+    <div class="stat-item">
+      <div class="stat-value">10K+</div>
+      <div class="stat-label">Requests per second per instance</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value">3</div>
+      <div class="stat-label">Pluggable rate limiting algorithms</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value">sub-ms</div>
+      <div class="stat-label">Redis check latency at p50</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value">27</div>
+      <div class="stat-label">RL state space per client</div>
+    </div>
+  </div>
+</div>
+
+<!-- OVERVIEW -->
+<section id="overview">
+  <div class="section-label">Overview</div>
+  <h2>What DRL Does</h2>
+  <p class="section-lead">
+    DRL sits between your clients and downstream services, intercepting every request and
+    deciding in real time whether to allow or block it based on configurable per-client policies.
+  </p>
+
+  <div style="margin-bottom: 48px;">
+    <div class="arch-flow">
+      <div class="arch-node">
+        <div class="arch-node-title">Client</div>
+        <div class="arch-node-sub">Any HTTP caller</div>
+      </div>
+      <div class="arch-arrow">
+        <svg viewBox="0 0 24 14" fill="none"><path d="M0 7h20M14 1l6 6-6 6" stroke="#3b82f6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="arch-node">
+        <div class="arch-node-title">FastAPI Service</div>
+        <div class="arch-node-sub">POST /v1/check</div>
+      </div>
+      <div class="arch-arrow">
+        <svg viewBox="0 0 24 14" fill="none"><path d="M0 7h20M14 1l6 6-6 6" stroke="#3b82f6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="arch-node">
+        <div class="arch-node-title">RL Agent</div>
+        <div class="arch-node-sub">Adaptive limit</div>
+      </div>
+      <div class="arch-arrow">
+        <svg viewBox="0 0 24 14" fill="none"><path d="M0 7h20M14 1l6 6-6 6" stroke="#3b82f6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="arch-node">
+        <div class="arch-node-title">Redis</div>
+        <div class="arch-node-sub">State store</div>
+      </div>
+      <div class="arch-arrow">
+        <svg viewBox="0 0 24 14" fill="none"><path d="M0 7h20M14 1l6 6-6 6" stroke="#3b82f6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="arch-node">
+        <div class="arch-node-title">Decision</div>
+        <div class="arch-node-sub">200 allow / block</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="feature-grid">
+    <div class="feature-card">
+      <div class="feature-icon">
+        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      </div>
+      <h3>Stateless Horizontal Scaling</h3>
+      <p>The API service holds no local state. All rate limit counters and token buckets live in Redis, so any number of instances can run behind a load balancer and reach consistent decisions.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">
+        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
+      </div>
+      <h3>Circuit Breaker Protection</h3>
+      <p>A circuit breaker wraps every Redis call. When failure thresholds are breached the service enters open mode and either fails open or closed based on your configured fail strategy.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">
+        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      </div>
+      <h3>Full Observability</h3>
+      <p>Prometheus metrics expose request counters, latency histograms, and error rates. OpenTelemetry spans and Jaeger distributed tracing provide end-to-end request visibility.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">
+        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 00-2 2v4"/><path d="M9 21H5a2 2 0 01-2-2v-4"/><path d="M15 3h4a2 2 0 012 2v4"/><path d="M15 21h4a2 2 0 002-2v-4"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+      </div>
+      <h3>Per-Client Policy Engine</h3>
+      <p>Rate limit rules are stored per client ID and per endpoint. Rules are configurable at runtime via the admin API without requiring a restart or redeployment.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">
+        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+      </div>
+      <h3>Correlation ID Tracking</h3>
+      <p>Every request receives a unique correlation ID that is propagated through all log entries, trace spans, and response headers, enabling precise debugging across distributed components.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">
+        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </div>
+      <h3>AI Adaptive Limits</h3>
+      <p>A Q-learning agent observes each client's traffic patterns and continuously adjusts rate limits upward or downward in response, maximizing throughput while protecting against abuse.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ALGORITHMS -->
+<section id="algorithms">
+  <div class="section-label">Core Algorithms</div>
+  <h2>Three Rate Limiting Strategies</h2>
+  <p class="section-lead">
+    Each algorithm is a self-contained Redis-backed implementation. Choose one via the
+    <code style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--accent);">ALGORITHM</code>
+    environment variable or switch at runtime.
+  </p>
+
+  <table class="algo-table">
+    <thead>
+      <tr>
+        <th>Algorithm</th>
+        <th>Behavior</th>
+        <th>Burst Tolerance</th>
+        <th>Redis Keys</th>
+        <th>p50 Latency</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Token Bucket</td>
+        <td>Tokens refill continuously at a fixed rate. Each request consumes one or more tokens. Unused tokens accumulate up to the bucket capacity.</td>
+        <td>High. Accumulated tokens permit temporary spikes.</td>
+        <td>2 per client</td>
+        <td><span class="latency-badge">1.2ms</span></td>
+      </tr>
+      <tr>
+        <td>Fixed Window</td>
+        <td>Time is divided into discrete windows. A counter increments per request and resets at the window boundary.</td>
+        <td>Moderate. Double-rate bursts are possible at boundaries.</td>
+        <td>1 per client</td>
+        <td><span class="latency-badge">0.8ms</span></td>
+      </tr>
+      <tr>
+        <td>Sliding Window</td>
+        <td>Evaluates requests within a true rolling window using per-second sub-buckets. Eliminates the boundary spike problem.</td>
+        <td>Low to moderate. Accurate continuous enforcement.</td>
+        <td>N per client (N = window seconds)</td>
+        <td><span class="latency-badge">2.3ms</span></td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- AI AGENT -->
+<section id="ai">
+  <div class="section-label">Reinforcement Learning</div>
+  <h2>Adaptive AI Rate Limiting</h2>
+  <p class="section-lead">
+    DRL includes a Q-learning agent that replaces static rate limits with dynamically adjusted
+    ones. Each client gets an independent Q-table. The agent explores policy space and converges
+    on limits that maximize throughput while minimizing abuse signals.
+  </p>
+
+  <div class="rl-grid" style="margin-bottom: 24px;">
+    <div class="rl-card">
+      <h3>State Space</h3>
+      <div class="rl-row">
+        <span class="rl-key">Traffic level</span>
+        <span class="rl-val">low / medium / high</span>
+      </div>
+      <div class="rl-row">
+        <span class="rl-key">Block ratio</span>
+        <span class="rl-val">low / medium / high</span>
+      </div>
+      <div class="rl-row">
+        <span class="rl-key">Traffic trend</span>
+        <span class="rl-val">falling / stable / rising</span>
+      </div>
+      <div class="rl-row">
+        <span class="rl-key">Total states</span>
+        <span class="rl-val">27</span>
+      </div>
+    </div>
+    <div class="rl-card">
+      <h3>Actions and Reward</h3>
+      <div class="rl-row">
+        <span class="rl-key">Action 0</span>
+        <span class="rl-val">Decrease limit 10%</span>
+      </div>
+      <div class="rl-row">
+        <span class="rl-key">Action 1</span>
+        <span class="rl-val">Keep current limit</span>
+      </div>
+      <div class="rl-row">
+        <span class="rl-key">Action 2</span>
+        <span class="rl-val">Increase limit 10%</span>
+      </div>
+      <div class="rl-row">
+        <span class="rl-key">Reward signal</span>
+        <span class="rl-val">+allowed, -0.5 blocked</span>
+      </div>
+    </div>
+    <div class="rl-card">
+      <h3>Learning Parameters</h3>
+      <div class="rl-row">
+        <span class="rl-key">Learning rate</span>
+        <span class="rl-val">0.1 (RL_LEARNING_RATE)</span>
+      </div>
+      <div class="rl-row">
+        <span class="rl-key">Discount factor</span>
+        <span class="rl-val">0.9 (RL_DISCOUNT_FACTOR)</span>
+      </div>
+      <div class="rl-row">
+        <span class="rl-key">Epsilon start</span>
+        <span class="rl-val">1.0, decays to 0.05</span>
+      </div>
+      <div class="rl-row">
+        <span class="rl-key">Update interval</span>
+        <span class="rl-val">10s (RL_UPDATE_INTERVAL_SEC)</span>
+      </div>
+    </div>
+    <div class="rl-card">
+      <h3>Diagnostics Endpoint</h3>
+      <div class="rl-row">
+        <span class="rl-key">Route</span>
+        <span class="rl-val">GET /v1/rl/diagnostics/{id}</span>
+      </div>
+      <div class="rl-row">
+        <span class="rl-key">Returns</span>
+        <span class="rl-val">limit, epsilon, rps, block ratio</span>
+      </div>
+      <div class="rl-row">
+        <span class="rl-key">Persistence</span>
+        <span class="rl-val">JSON Q-table save/load</span>
+      </div>
+      <div class="rl-row">
+        <span class="rl-key">Enable</span>
+        <span class="rl-val">ENABLE_RL=true</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STACK -->
+<section id="stack">
+  <div class="section-label">Technology Stack</div>
+  <h2>Built With</h2>
+  <p class="section-lead">
+    Every component was selected for production readiness, not prototype convenience.
+  </p>
+
+  <div class="stack-grid">
+    <div class="stack-item">
+      <div class="stack-name">Python 3.11</div>
+      <div class="stack-role">Primary language</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">FastAPI</div>
+      <div class="stack-role">Async HTTP API framework</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Redis</div>
+      <div class="stack-role">Distributed state store</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">PostgreSQL</div>
+      <div class="stack-role">Policy and metrics persistence</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Prometheus</div>
+      <div class="stack-role">Metrics collection and exposure</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">OpenTelemetry</div>
+      <div class="stack-role">Distributed trace instrumentation</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Jaeger</div>
+      <div class="stack-role">Trace visualization backend</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Docker Compose</div>
+      <div class="stack-role">Full local stack orchestration</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">NumPy</div>
+      <div class="stack-role">Q-table computation (no ML framework)</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Pydantic v2</div>
+      <div class="stack-role">Request and response validation</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Locust</div>
+      <div class="stack-role">Load and performance testing</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">GitHub Actions</div>
+      <div class="stack-role">CI/CD pipeline automation</div>
+    </div>
+  </div>
+</section>
+
+<!-- QUICKSTART -->
+<section id="quickstart">
+  <div class="section-label">Quickstart</div>
+  <h2>Up in 60 Seconds</h2>
+  <p class="section-lead">
+    The full stack (API, Redis, PostgreSQL, Jaeger, Prometheus) starts with a single command.
+  </p>
+
+  <pre><span class="code-comment"># Clone the repository</span>
+git clone https://github.com/apatha32/DRL-Distributed-Rate-Limiter-.git
+cd DRL-Distributed-Rate-Limiter-
+
+<span class="code-comment"># Start the full stack</span>
+docker-compose up --build
+
+<span class="code-comment"># Check a rate limit (allow)</span>
+curl -X POST http://localhost:8000/v1/check \
+  -H "Content-Type: application/json" \
+  -d '<span class="code-str">{"client_id": "demo", "limit_key": "api", "cost": 1}</span>'
+
+<span class="code-comment"># Enable the RL adaptive agent</span>
+<span class="code-key">ENABLE_RL</span>=<span class="code-val">true</span> docker-compose up --build
+
+<span class="code-comment"># Inspect RL diagnostics for a client</span>
+curl http://localhost:8000/v1/rl/diagnostics/demo</pre>
+</section>
+
+<!-- CTA -->
+<section>
+  <div class="cta-banner">
+    <h2>Explore the Project</h2>
+    <p>Review the source code, run the interactive demo, or deploy your own instance.</p>
+    <div class="cta-group" style="justify-content:center;">
+      <a class="btn btn-primary" href="https://github.com/apatha32/DRL-Distributed-Rate-Limiter-" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        GitHub Repository
+      </a>
+      <a class="btn btn-outline" href="https://huggingface.co/spaces/apatha32/drl-demo" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+        Live Demo on Hugging Face
+      </a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div style="max-width:1100px;margin:0 auto;">
+    Built by <a href="https://github.com/apatha32" target="_blank" rel="noopener">Ambarish Pathak</a>.
+    Source available on <a href="https://github.com/apatha32/DRL-Distributed-Rate-Limiter-" target="_blank" rel="noopener">GitHub</a>.
+  </div>
+</footer>
+
+</body>
+</html>

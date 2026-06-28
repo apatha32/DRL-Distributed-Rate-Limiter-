@@ -51,3 +51,16 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     redis_available: bool
+
+
+class RLDiagnosticsResponse(BaseModel):
+    """RL agent diagnostics for a single client."""
+
+    client_id: str
+    rl_enabled: bool
+    current_limit: Optional[int] = None
+    epsilon: Optional[float] = None
+    rps: Optional[float] = None
+    block_ratio: Optional[float] = None
+    rps_delta: Optional[float] = None
+    total_requests_window: Optional[int] = None
