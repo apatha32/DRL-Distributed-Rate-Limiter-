@@ -155,6 +155,13 @@ def get_rate_limit_rule(client_id: str, limit_key: str = "global") -> Dict[str, 
     return rate_limit_rules["default"]
 
 
+@app.get("/", tags=["Info"], include_in_schema=False)
+async def root():
+    """Redirect root to interactive API docs."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/docs")
+
+
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
     """Health check endpoint with circuit breaker status."""
