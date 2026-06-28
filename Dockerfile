@@ -1,0 +1,23 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install an in-process Redis substitute for the HF Space demo
+# (HF Spaces are single-container; no sidecar Redis available)
+RUN pip install --no-cache-dir fakeredis[aioredis]
+
+COPY src/ ./src/
+
+ENV PYTHONUNBUFFERED=1
+# Tell the app to use fakeredis in demo mode
+ENV DEMO_MODE=true
+ENV FAIL_MODE=open
+ENV ALGORITHM=token_bucket
+ENV ENABLE_RL=true
+
+EXPOSE 7860
+
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "7860"]
