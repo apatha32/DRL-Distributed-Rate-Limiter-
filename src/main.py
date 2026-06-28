@@ -2,11 +2,14 @@
 Main FastAPI application for the distributed rate limiter.
 """
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import generate_latest
 from typing import Dict, Any
 
@@ -102,6 +105,11 @@ app.add_middleware(CorrelationIDMiddleware)
 # Instrument app with OpenTelemetry
 instrument_app(app)
 
+# Serve the built React dashboard from /static
+_STATIC = Path(__file__).parent.parent / "static"
+if _STATIC.exists():
+    app.mount("/assets", StaticFiles(directory=str(_STATIC / "assets")), name="assets")
+
 
 def get_limiter():
     """Get appropriate rate limiter based on configuration."""
@@ -157,9 +165,25 @@ def get_rate_limit_rule(client_id: str, limit_key: str = "global") -> Dict[str, 
 
 @app.get("/", tags=["Info"], include_in_schema=False)
 async def root():
-    """Redirect root to interactive API docs."""
+    """Serve the React dashboard."""
+    index = Path(__file__).parent.parent / "static" / "index.html"
+    if index.exists():
+        return FileResponse(str(index))
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/docs")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str):
+    """Catch-all: serve index.html for client-side routes, 404 for unknown API paths."""
+    # Don't intercept known API or system paths
+    api_prefixes = ("v1/", "health", "metrics", "rules", "circuit", "docs", "openapi", "redoc")
+    if any(full_path.startswith(p) for p in api_prefixes):
+        raise HTTPException(status_code=404, detail="Not Found")
+    index = Path(__file__).parent.parent / "static" / "index.html"
+    if index.exists():
+        return FileResponse(str(index))
+    raise HTTPException(status_code=404, detail="Not Found")
 
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
