@@ -1,4 +1,17 @@
-# 🚀 Distributed Rate Limiter (Tier 1)
+---
+title: DRL - Distributed Rate Limiter
+emoji: 
+colorFrom: blue
+colorTo: cyan
+sdk: docker
+app_port: 7860
+dockerfile: Dockerfile.huggingface
+pinned: true
+license: mit
+short_description: Production-grade distributed rate limiter with Q-learning adaptive limits
+---
+
+# Distributed Rate Limiter (DRL)
 
 Production-grade distributed rate limiting service with circuit breaker resilience, distributed tracing, and comprehensive observability. Built for modern backend systems handling 10K+ requests/second.
 
