@@ -1,3 +1,13 @@
+# Stage 1: Build React dashboard
+FROM node:20-slim AS dashboard-builder
+
+WORKDIR /dashboard
+COPY dashboard/package*.json ./
+RUN npm ci
+COPY dashboard/ ./
+RUN npm run build
+
+# Stage 2: Python backend
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -5,11 +15,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install an in-process Redis substitute for the HF Space demo
-# (HF Spaces are single-container; no sidecar Redis available)
-RUN pip install --no-cache-dir fakeredis[aioredis]
+# Install in-process Redis substitute and file serving support for HF Space demo
+RUN pip install --no-cache-dir "fakeredis[aioredis]" aiofiles
 
 COPY src/ ./src/
+COPY --from=dashboard-builder /dashboard/dist ./dashboard/dist
 
 ENV PYTHONUNBUFFERED=1
 # Tell the app to use fakeredis in demo mode

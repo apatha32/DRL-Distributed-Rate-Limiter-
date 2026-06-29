@@ -2,11 +2,13 @@
 Main FastAPI application for the distributed rate limiter.
 """
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import generate_latest
 from typing import Dict, Any
 
@@ -102,6 +104,12 @@ app.add_middleware(CorrelationIDMiddleware)
 # Instrument app with OpenTelemetry
 instrument_app(app)
 
+# Serve the pre-built React dashboard if it exists (e.g. on Hugging Face)
+_DIST = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
+_ASSETS = os.path.join(_DIST, "assets")
+if os.path.isdir(_ASSETS):
+    app.mount("/assets", StaticFiles(directory=_ASSETS), name="assets")
+
 
 def get_limiter():
     """Get appropriate rate limiter based on configuration."""
@@ -157,7 +165,10 @@ def get_rate_limit_rule(client_id: str, limit_key: str = "global") -> Dict[str, 
 
 @app.get("/", tags=["Info"], include_in_schema=False)
 async def root():
-    """Redirect root to interactive API docs."""
+    """Serve the React dashboard if built, otherwise redirect to API docs."""
+    index_html = os.path.join(_DIST, "index.html")
+    if os.path.isfile(index_html):
+        return FileResponse(index_html)
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/docs")
 
