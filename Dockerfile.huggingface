@@ -1,13 +1,3 @@
-# Stage 1: Build React dashboard
-FROM node:20-slim AS dashboard-builder
-
-WORKDIR /dashboard
-COPY dashboard/package*.json ./
-RUN npm ci
-COPY dashboard/ ./
-RUN npm run build
-
-# Stage 2: Python backend
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -19,7 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir "fakeredis[aioredis]" aiofiles
 
 COPY src/ ./src/
-COPY --from=dashboard-builder /dashboard/dist ./dashboard/dist
+COPY dashboard/dist ./dashboard/dist
 
 ENV PYTHONUNBUFFERED=1
 # Tell the app to use fakeredis in demo mode
