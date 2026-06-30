@@ -12,6 +12,7 @@ COPY src/ ./src/
 COPY dashboard/dist ./dashboard/dist
 
 ENV PYTHONUNBUFFERED=1
+ENV DASHBOARD_DIST=/app/dashboard/dist
 # Tell the app to use fakeredis in demo mode
 ENV DEMO_MODE=true
 ENV FAIL_MODE=open

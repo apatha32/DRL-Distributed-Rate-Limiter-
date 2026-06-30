@@ -105,10 +105,14 @@ app.add_middleware(CorrelationIDMiddleware)
 instrument_app(app)
 
 # Serve the pre-built React dashboard if it exists (e.g. on Hugging Face)
-_DIST = os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
+_DIST = os.environ.get("DASHBOARD_DIST") or os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
+)
 _ASSETS = os.path.join(_DIST, "assets")
+logger.info(f"Dashboard dist path: {_DIST} | exists: {os.path.isdir(_DIST)}")
 if os.path.isdir(_ASSETS):
     app.mount("/assets", StaticFiles(directory=_ASSETS), name="assets")
+    logger.info("Mounted /assets for dashboard")
 
 
 def get_limiter():
