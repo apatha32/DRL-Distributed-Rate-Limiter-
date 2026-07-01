@@ -5,12 +5,20 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install in-process Redis substitute and file serving support for HF Space demo
+RUN pip install --no-cache-dir "fakeredis[aioredis]" aiofiles
+
 COPY src/ ./src/
+COPY dashboard/dist ./dashboard/dist
 
 ENV PYTHONUNBUFFERED=1
-ENV REDIS_HOST=redis
-ENV REDIS_PORT=6379
+ENV DASHBOARD_DIST=/app/dashboard/dist
+# Tell the app to use fakeredis in demo mode
+ENV DEMO_MODE=true
+ENV FAIL_MODE=open
+ENV ALGORITHM=token_bucket
+ENV ENABLE_RL=true
 
-EXPOSE 8000
+EXPOSE 7860
 
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "7860"]

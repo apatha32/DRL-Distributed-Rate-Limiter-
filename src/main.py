@@ -177,6 +177,20 @@ async def root():
     return RedirectResponse(url="/docs")
 
 
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str):
+    """SPA catch-all: serve index.html for React Router paths."""
+    # Don't intercept API or known server routes
+    if full_path.startswith(("v1/", "health", "docs", "openapi", "metrics", "circuit-breaker")):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404)
+    index_html = os.path.join(_DIST, "index.html")
+    if os.path.isfile(index_html):
+        return FileResponse(index_html)
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/docs")
+
+
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
     """Health check endpoint with circuit breaker status."""
