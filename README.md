@@ -1,14 +1,13 @@
 ---
 title: DRL - Distributed Rate Limiter
-emoji: 
+emoji: 🚀
 colorFrom: blue
-colorTo: cyan
+colorTo: purple
 sdk: docker
 app_port: 7860
-dockerfile: Dockerfile.huggingface
 pinned: true
 license: mit
-short_description: Production-grade distributed rate limiter with Q-learning adaptive limits
+short_description: Distributed rate limiter with Q-learning AI
 ---
 
 # Distributed Rate Limiter (DRL)
