@@ -3,7 +3,30 @@ import axios from 'axios'
 // Production: VITE_API_URL points at the Railway API. Dev: empty, and Vite proxies to :8000.
 export const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
 
+/** A production build with no API URL calls its own host, which only serves the dashboard. */
+export const API_MISCONFIGURED = import.meta.env.PROD && !API_BASE
+
+export class ApiNotConnectedError extends Error {
+  constructor() {
+    super(
+      API_MISCONFIGURED
+        ? 'The dashboard is not connected to the API. Set VITE_API_URL in Vercel to your Railway URL, then redeploy.'
+        : `${API_BASE || window.location.origin} answered with a web page instead of API data. Check that VITE_API_URL points at the API.`,
+    )
+    this.name = 'ApiNotConnectedError'
+  }
+}
+
 const http = axios.create({ baseURL: API_BASE, timeout: 10_000 })
+
+// Every API response is JSON. Anything else (typically the dashboard's own
+// index.html from a SPA rewrite) means we are talking to the wrong server.
+export function requireJson<T extends { headers: Record<string, unknown> }>(res: T): T {
+  const type = String(res.headers['content-type'] ?? '')
+  if (!type.includes('application/json')) throw new ApiNotConnectedError()
+  return res
+}
+http.interceptors.response.use(requireJson)
 
 const admin = (apiKey: string) => ({ headers: { 'X-API-Key': apiKey } })
 
@@ -119,6 +142,7 @@ export const agentKey = (clientId: string, endpoint: string) =>
 
 /** Pull the API's error detail out of an axios error. */
 export function errorMessage(err: unknown): string {
+  if (err instanceof ApiNotConnectedError) return err.message
   if (axios.isAxiosError(err)) {
     const detail = err.response?.data?.detail
     if (typeof detail === 'string') return detail

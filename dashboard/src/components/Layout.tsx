@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Brain, Layers, LayoutDashboard, Menu, Sparkles, WifiOff, X, Zap } from 'lucide-react'
 import clsx from 'clsx'
-import { API_BASE } from '../lib/api'
+import { API_BASE, errorMessage } from '../lib/api'
 import { useHealth } from '../lib/queries'
 import { ease } from '../lib/theme'
 import { DemoIndicator } from './DemoPanel'
@@ -73,7 +73,7 @@ function NavItems({ layoutId, onNavigate }: { layoutId: string; onNavigate?: () 
 }
 
 function OfflineBanner() {
-  const { isError, refetch, isFetching } = useHealth()
+  const { isError, error, refetch, isFetching } = useHealth()
   return (
     <AnimatePresence>
       {isError && (
@@ -87,7 +87,7 @@ function OfflineBanner() {
           <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-2.5 text-xs sm:px-6">
             <span className="inline-flex items-center gap-2 text-ink">
               <WifiOff className="h-3.5 w-3.5 text-critical" aria-hidden />
-              Can't reach the API at <span className="font-mono">{API_BASE || window.location.origin}</span>
+              {errorMessage(error)}
             </span>
             <button className="btn-ghost px-2.5 py-1 text-xs" onClick={() => refetch()} disabled={isFetching}>
               Retry
@@ -161,7 +161,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       <footer className="border-t border-white/10">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-4 text-xs text-muted sm:px-6">
           <span>Distributed Rate Limiter · Redis Lua · Q-learning · Claude</span>
-          <span className="font-mono">{API_BASE || 'local API'}</span>
+          <span className="font-mono">{API_BASE || (import.meta.env.PROD ? 'API not configured' : 'local API')}</span>
         </div>
       </footer>
     </div>
