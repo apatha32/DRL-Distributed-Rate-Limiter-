@@ -161,7 +161,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       <footer className="border-t border-white/10">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-4 text-xs text-muted sm:px-6">
           <span>Distributed Rate Limiter · Redis Lua · Q-learning · Claude</span>
-          <span className="font-mono">{API_BASE || (import.meta.env.PROD ? 'API not configured' : 'local API')}</span>
+          <span className="font-mono">{API_BASE || (import.meta.env.PROD ? 'API via /v1 proxy' : 'local API')}</span>
         </div>
       </footer>
     </div>
