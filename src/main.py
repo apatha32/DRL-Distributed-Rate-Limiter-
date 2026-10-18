@@ -123,6 +123,9 @@ async def lifespan(app: FastAPI):
 
     if rl_task:
         rl_task.cancel()
+    # Drop objects bound to the Redis client we are about to close
+    global _limiter, _analysis_quota
+    _limiter = _analysis_quota = None
     await RedisClient.close()
     logger.info(f"[{SERVICE_NAME}] Service shutdown.")
 

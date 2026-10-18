@@ -1,53 +1,24 @@
 """
-Integration tests using Docker test containers.
+Integration tests against real Redis and PostgreSQL.
+
+Uses the services configured by REDIS_HOST / REDIS_PORT / DATABASE_URL (in CI,
+the workflow's service containers). These are read when src.main is imported,
+so set them in the environment before running pytest.
 """
 import pytest
-import time
-import requests
-from testcontainers.redis import RedisContainer
-from testcontainers.postgres import PostgresContainer
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-import os
-import sys
-
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.main import app
-from src.database import Base, RateLimitRule
 
 
 class TestRateLimiterIntegration:
     """Integration tests with real Redis and PostgreSQL."""
-    
-    @pytest.fixture(scope="class")
-    def redis_container(self):
-        """Start Redis container."""
-        with RedisContainer(image="redis:7-alpine") as redis:
-            yield redis
-    
-    @pytest.fixture(scope="class")
-    def postgres_container(self):
-        """Start PostgreSQL container."""
-        with PostgresContainer(image="postgres:15-alpine") as postgres:
-            yield postgres
-    
+
     @pytest.fixture
-    def client(self, redis_container, postgres_container):
-        """Create test client with real containers."""
-        # Set environment variables to use containers
-        os.environ["REDIS_HOST"] = redis_container.get_container_host_ip()
-        os.environ["REDIS_PORT"] = str(redis_container.get_exposed_port(6379))
-        os.environ["DATABASE_URL"] = postgres_container.get_connection_url().replace(
-            "psycopg2", "postgresql"
-        )
-        
-        # Create test client
+    def client(self):
         with TestClient(app) as client:
             yield client
-    
+
     def test_health_check(self, client):
         """Test health check endpoint."""
         response = client.get("/health")
@@ -68,6 +39,9 @@ class TestRateLimiterIntegration:
         data = response.json()
         assert data["allowed"] is True
         assert data["remaining"] == 99  # 100 - 1
+        # A real decision, not a fail-open fallback
+        assert "X-RateLimit-Degraded" not in response.headers
+        assert response.headers["X-RateLimit-Limit"] == "100"
     
     def test_rate_limit_block(self, client):
         """Test blocking request exceeding limit."""
