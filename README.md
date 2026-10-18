@@ -1,5 +1,7 @@
 # Distributed Rate Limiter (DRL)
 
+**Live website:** https://drl-distributed-rate-limiter.vercel.app
+
 Distributed API rate limiter supporting four algorithms (Token Bucket, Fixed Window, Sliding Window, Leaky Bucket) backed by Redis. Every decision is a single atomic Lua script, so per-client limits are enforced consistently across any number of limiter nodes with sub-millisecond overhead.
 
 A tabular Q-learning agent sits on top of the limiter: every 10 seconds it observes each client's live RPS and block ratio and raises, holds, or lowers that client's limit, so limits adapt to bursty load without manual tuning. A Claude-powered **AI traffic analyst** reviews the limiter's state and the agent's decisions on demand, explains what is happening in plain English, and proposes rule changes that an admin applies with one click.
@@ -15,7 +17,7 @@ The dashboard has a **Run live demo** button on the Overview page. It sends real
 
 ### On the deployed site
 
-1. Open the dashboard (your Vercel URL).
+1. Open the live website: https://drl-distributed-rate-limiter.vercel.app
 2. On the Overview page, click **Run live demo**.
 3. Watch the box under the button. It shows which phase is running, live counters, and a "What just happened" feed.
 4. Browse other pages while it runs. A "Demo running" button in the header stops it from anywhere. It also stops by itself after 15 minutes.
