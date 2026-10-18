@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { ArrowDownRight, ArrowRight, ArrowUpRight, Radar } from 'lucide-react'
+import { ArrowDownRight, ArrowRight, ArrowUpRight, PlugZap, Radar } from 'lucide-react'
 import { AlgorithmGlyph } from '../components/AlgorithmGlyph'
 import { DemoPanel } from '../components/DemoPanel'
 import { ChartTooltip } from '../components/ChartTooltip'
@@ -11,7 +11,7 @@ import {
   Card, CardHeader, ChartReveal, Chip, EmptyState, Legend, Meter, PageHeader, Skeleton, Stagger, StaggerItem, Status, StatusPill,
 } from '../components/ui'
 import { algorithmById } from '../lib/algorithms'
-import { agentKey, ClientStat, Stats } from '../lib/api'
+import { agentKey, ClientStat, errorMessage, Stats } from '../lib/api'
 import { clockTime, compact, duration, integer, ms, percent, rate, ratio } from '../lib/format'
 import { useHealth, useStats } from '../lib/queries'
 import { axisTick, color, ease } from '../lib/theme'
@@ -36,7 +36,7 @@ function StatusStrip({ stats }: { stats: Stats | undefined }) {
       <StatusPill
         status={redisOk === undefined ? 'neutral' : redisOk ? 'good' : 'critical'}
         label="Redis"
-        detail={redisOk === undefined ? 'checking' : redisOk ? 'connected' : 'down'}
+        detail={health.isError ? 'unknown' : redisOk === undefined ? 'checking' : redisOk ? 'connected' : 'down'}
       />
       {stats && (
         <>
@@ -221,7 +221,7 @@ function ClientsTable({ stats }: { stats: Stats | undefined }) {
 }
 
 export default function Overview() {
-  const { data: stats, isPending } = useStats()
+  const { data: stats, isPending, isError, error } = useStats()
   const series = useThroughput(stats)
   const current = series.at(-1)
   const totals = stats?.totals
@@ -238,13 +238,23 @@ export default function Overview() {
         <StatusStrip stats={stats} />
       </StaggerItem>
 
+      {isError && !stats && (
+        <StaggerItem>
+          <Card>
+            <EmptyState icon={PlugZap} title="No live data" description={errorMessage(error)} />
+          </Card>
+        </StaggerItem>
+      )}
+
       <StaggerItem>
         <DemoPanel />
       </StaggerItem>
 
-      <StaggerItem>
-        <ActiveAlgorithm stats={stats} />
-      </StaggerItem>
+      {!(isError && !stats) && (
+        <StaggerItem>
+          <ActiveAlgorithm stats={stats} />
+        </StaggerItem>
+      )}
 
       <StaggerItem>
       <Stagger className="grid grid-cols-2 gap-4 lg:grid-cols-6">

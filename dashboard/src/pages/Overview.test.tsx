@@ -47,3 +47,15 @@ describe('Overview', () => {
     expect(screen.getByRole('link', { name: 'Open the Playground' })).toHaveAttribute('href', '/playground')
   })
 })
+
+describe('Overview without an API', () => {
+  it('explains that the dashboard is not connected instead of crashing', async () => {
+    const { ApiNotConnectedError } = await import('../lib/api')
+    vi.spyOn(api, 'health').mockRejectedValue(new ApiNotConnectedError())
+    vi.spyOn(api, 'stats').mockRejectedValue(new ApiNotConnectedError())
+    renderWithProviders(<Overview />)
+
+    expect(await screen.findByText('No live data')).toBeInTheDocument()
+    expect(screen.getByText(/VITE_API_URL/)).toBeInTheDocument()
+  })
+})

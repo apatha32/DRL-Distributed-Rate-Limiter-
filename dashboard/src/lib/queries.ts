@@ -1,10 +1,13 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { api } from './api'
+import { api, ApiNotConnectedError } from './api'
+
+// Retrying can't fix a wrong API address, so don't
+const retry = (count: number, err: unknown) => !(err instanceof ApiNotConnectedError) && count < 2
 
 export const STATS_POLL_MS = 2000
 
 export const useHealth = () =>
-  useQuery({ queryKey: ['health'], queryFn: api.health, refetchInterval: 5000 })
+  useQuery({ queryKey: ['health'], queryFn: api.health, refetchInterval: 5000, retry })
 
 export const useStats = () =>
   useQuery({
@@ -12,6 +15,7 @@ export const useStats = () =>
     queryFn: api.stats,
     refetchInterval: STATS_POLL_MS,
     placeholderData: keepPreviousData,
+    retry,
   })
 
 export const useRLDiagnostics = (key: string | undefined) =>
