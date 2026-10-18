@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="DRL is a production-grade distributed rate limiting service with adaptive AI-driven limits, circuit breaker resilience, and full observability." />
+  <meta name="description" content="DRL is a distributed API rate limiter with four atomic Redis algorithms, Q-learning adaptive limits, a Claude-powered traffic analyst, and a live dashboard." />
   <meta property="og:title" content="DRL - Distributed Rate Limiter" />
-  <meta property="og:description" content="Production-grade distributed rate limiting with Q-learning adaptive limits, circuit breakers, and OpenTelemetry tracing." />
+  <meta property="og:description" content="Distributed rate limiting with atomic Redis Lua algorithms, Q-learning adaptive limits, and a Claude traffic analyst. Try the live website." />
   <meta property="og:type" content="website" />
   <title>DRL - Distributed Rate Limiter</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -447,7 +447,9 @@
     <ul class="nav-links">
       <li><a href="#overview">Overview</a></li>
       <li><a href="#algorithms">Algorithms</a></li>
-      <li><a href="#ai">AI Agent</a></li>
+      <li><a href="#ai">RL Agent</a></li>
+      <li><a href="#analyst">AI Analyst</a></li>
+      <li><a href="#live">Live Website</a></li>
       <li><a href="#stack">Stack</a></li>
       <li><a href="#quickstart">Quickstart</a></li>
     </ul>
@@ -459,10 +461,10 @@
   <div class="hero-badge">Open Source Infrastructure</div>
   <h1>Distributed Rate Limiter<br /><span>with Adaptive AI Limits</span></h1>
   <p>
-    A production-grade rate limiting microservice that enforces per-client request
-    policies at scale using Redis-backed algorithms, circuit breaker resilience,
-    and a reinforcement learning agent that continuously adjusts limits based on
-    real traffic behavior.
+    A rate limiting service that enforces per-client limits with four algorithms, each
+    a single atomic Redis Lua script. A Q-learning agent adjusts limits from live traffic,
+    and a Claude-powered analyst explains what is happening and proposes rule changes.
+    Everything is visible on a live dashboard with a guided demo.
   </p>
   <div class="cta-group">
     <a class="btn btn-primary" href="https://github.com/apatha32/DRL-Distributed-Rate-Limiter-" target="_blank" rel="noopener">
@@ -480,20 +482,20 @@
 <div class="stat-bar">
   <div class="stat-bar-inner">
     <div class="stat-item">
-      <div class="stat-value">10K+</div>
-      <div class="stat-label">Requests per second per instance</div>
+      <div class="stat-value">4</div>
+      <div class="stat-label">Algorithms, each one atomic Lua script</div>
     </div>
     <div class="stat-item">
-      <div class="stat-value">3</div>
-      <div class="stat-label">Pluggable rate limiting algorithms</div>
-    </div>
-    <div class="stat-item">
-      <div class="stat-value">sub-ms</div>
-      <div class="stat-label">Redis check latency at p50</div>
+      <div class="stat-value">0.1 ms</div>
+      <div class="stat-label">Decision latency p50 (benchmarked, Redis co-located)</div>
     </div>
     <div class="stat-item">
       <div class="stat-value">27</div>
-      <div class="stat-label">RL state space per client</div>
+      <div class="stat-label">RL states per client</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value">110+</div>
+      <div class="stat-label">Automated tests (API and dashboard)</div>
     </div>
   </div>
 </div>
@@ -539,7 +541,7 @@
       </div>
       <div class="arch-node">
         <div class="arch-node-title">Decision</div>
-        <div class="arch-node-sub">200 allow / block</div>
+        <div class="arch-node-sub">200 allow / 429 block</div>
       </div>
     </div>
   </div>
@@ -549,43 +551,43 @@
       <div class="feature-icon">
         <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
       </div>
-      <h3>Stateless Horizontal Scaling</h3>
-      <p>The API service holds no local state. All rate limit counters and token buckets live in Redis, so any number of instances can run behind a load balancer and reach consistent decisions.</p>
+      <h3>Consistent Across Nodes</h3>
+      <p>Every decision is one atomic Redis Lua script that uses the Redis clock, so any number of API instances share the same counters and can never both spend a client's last unit of quota. A test runs 8 concurrent nodes and checks that exactly the limit is admitted.</p>
     </div>
     <div class="feature-card">
       <div class="feature-icon">
         <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/></svg>
       </div>
       <h3>Circuit Breaker Protection</h3>
-      <p>A circuit breaker wraps every Redis call. When failure thresholds are breached the service enters open mode and either fails open or closed based on your configured fail strategy.</p>
+      <p>A circuit breaker wraps every Redis call. After repeated failures it opens, and the service either fails open (requests allowed and marked <code>X-RateLimit-Degraded</code>) or fails closed with 503, depending on <code>FAIL_MODE</code>.</p>
     </div>
     <div class="feature-card">
       <div class="feature-icon">
         <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
       </div>
       <h3>Full Observability</h3>
-      <p>Prometheus metrics expose request counters, latency histograms, and error rates. OpenTelemetry spans and Jaeger distributed tracing provide end-to-end request visibility.</p>
+      <p>Prometheus metrics at <code>/metrics</code> cover decisions, latency histograms, Redis errors, and AI token usage. OpenTelemetry traces export over OTLP to Jaeger or any compatible backend.</p>
     </div>
     <div class="feature-card">
       <div class="feature-icon">
         <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 00-2 2v4"/><path d="M9 21H5a2 2 0 01-2-2v-4"/><path d="M15 3h4a2 2 0 012 2v4"/><path d="M15 21h4a2 2 0 002-2v-4"/><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
       </div>
       <h3>Per-Client Policy Engine</h3>
-      <p>Rate limit rules are stored per client ID and per endpoint. Rules are configurable at runtime via the admin API without requiring a restart or redeployment.</p>
+      <p>Rules are set per client and per endpoint (for example a stricter limit on <code>/login</code>) and can be changed at runtime through the API-key protected admin API, without a restart.</p>
     </div>
     <div class="feature-card">
       <div class="feature-icon">
         <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
       </div>
       <h3>Correlation ID Tracking</h3>
-      <p>Every request receives a unique correlation ID that is propagated through all log entries, trace spans, and response headers, enabling precise debugging across distributed components.</p>
+      <p>Every request gets a correlation ID that is attached to its log lines and returned in the <code>X-Correlation-ID</code> header, so one request can be followed through the logs.</p>
     </div>
     <div class="feature-card">
       <div class="feature-icon">
         <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       </div>
       <h3>AI Adaptive Limits</h3>
-      <p>A Q-learning agent observes each client's traffic patterns and continuously adjusts rate limits upward or downward in response, maximizing throughput while protecting against abuse.</p>
+      <p>Every 10 seconds a Q-learning agent reviews each client's traffic level, block ratio and trend, and raises, holds, or lowers its limit by 10%, learning from the reward each change earns.</p>
     </div>
   </div>
 </section>
@@ -647,11 +649,12 @@
 <!-- AI AGENT -->
 <section id="ai">
   <div class="section-label">Reinforcement Learning</div>
-  <h2>Adaptive AI Rate Limiting</h2>
+  <h2>Adaptive Limits with Q-Learning</h2>
   <p class="section-lead">
-    DRL includes a Q-learning agent that replaces static rate limits with dynamically adjusted
-    ones. Each client gets an independent Q-table. The agent explores policy space and converges
-    on limits that maximize throughput while minimizing abuse signals.
+    Each client, and each endpoint rule, gets its own Q-table. Every 10 seconds the agent looks
+    at the last window, updates the Q-table from the reward, and picks its next action. It starts
+    out exploring at random and relies more on what it has learned as exploration decays. Reading
+    the current limit on the request path is a memory lookup; learning happens in the background.
   </p>
 
   <div class="rl-grid" style="margin-bottom: 24px;">
@@ -690,7 +693,7 @@
       </div>
       <div class="rl-row">
         <span class="rl-key">Reward signal</span>
-        <span class="rl-val">+allowed, -0.5 blocked</span>
+        <span class="rl-val">+1 allowed, -0.5 blocked, extra penalties</span>
       </div>
     </div>
     <div class="rl-card">
@@ -716,15 +719,15 @@
       <h3>Diagnostics Endpoint</h3>
       <div class="rl-row">
         <span class="rl-key">Route</span>
-        <span class="rl-val">GET /v1/rl/diagnostics/{id}</span>
+        <span class="rl-val">GET /v1/rl/diagnostics/{client}</span>
       </div>
       <div class="rl-row">
         <span class="rl-key">Returns</span>
         <span class="rl-val">limit, epsilon, rps, block ratio</span>
       </div>
       <div class="rl-row">
-        <span class="rl-key">Persistence</span>
-        <span class="rl-val">JSON Q-table save/load</span>
+        <span class="rl-key">History</span>
+        <span class="rl-val">last 30 decisions per client</span>
       </div>
       <div class="rl-row">
         <span class="rl-key">Enable</span>
@@ -734,62 +737,164 @@
   </div>
 </section>
 
+<!-- AI ANALYST -->
+<section id="analyst">
+  <div class="section-label">Claude</div>
+  <h2>AI Traffic Analyst</h2>
+  <p class="section-lead">
+    On request, Claude reviews a snapshot of the limiter and the RL agent's recent decisions,
+    explains what is happening in plain English, flags suspicious clients, and proposes rule
+    changes. Nothing changes until an admin applies a recommendation, and Claude is never on the
+    request path, so it adds no latency to any decision.
+  </p>
+
+  <div class="rl-grid" style="margin-bottom: 24px;">
+    <div class="rl-card">
+      <h3>What Claude Sees</h3>
+      <div class="rl-row"><span class="rl-key">Rules</span><span class="rl-val">per client and endpoint</span></div>
+      <div class="rl-row"><span class="rl-key">Traffic</span><span class="rl-val">allowed and blocked per client</span></div>
+      <div class="rl-row"><span class="rl-key">RL agent</span><span class="rl-val">recent decisions and rewards</span></div>
+      <div class="rl-row"><span class="rl-key">Scope</span><span class="rl-val">50 busiest clients</span></div>
+    </div>
+    <div class="rl-card">
+      <h3>What It Returns</h3>
+      <div class="rl-row"><span class="rl-key">Status</span><span class="rl-val">healthy / watch / incident</span></div>
+      <div class="rl-row"><span class="rl-key">Summary</span><span class="rl-val">plain English</span></div>
+      <div class="rl-row"><span class="rl-key">Findings</span><span class="rl-val">client, severity, evidence</span></div>
+      <div class="rl-row"><span class="rl-key">Format</span><span class="rl-val">schema-validated JSON</span></div>
+    </div>
+    <div class="rl-card">
+      <h3>Safeguards</h3>
+      <div class="rl-row"><span class="rl-key">Approval</span><span class="rl-val">admin applies each change</span></div>
+      <div class="rl-row"><span class="rl-key">Validation</span><span class="rl-val">same as manual rule edits</span></div>
+      <div class="rl-row"><span class="rl-key">Input</span><span class="rl-val">client IDs treated as untrusted</span></div>
+      <div class="rl-row"><span class="rl-key">Cost cap</span><span class="rl-val">20 analyses per hour</span></div>
+    </div>
+    <div class="rl-card">
+      <h3>Endpoints</h3>
+      <div class="rl-row"><span class="rl-key">Run</span><span class="rl-val">POST /v1/admin/ai/analyses</span></div>
+      <div class="rl-row"><span class="rl-key">Apply</span><span class="rl-val">.../recommendations/{i}/apply</span></div>
+      <div class="rl-row"><span class="rl-key">Auth</span><span class="rl-val">X-API-Key header</span></div>
+      <div class="rl-row"><span class="rl-key">Model</span><span class="rl-val">claude-opus-5-5</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- LIVE WEBSITE -->
+<section id="live">
+  <div class="section-label">Live Website</div>
+  <h2>See It Running</h2>
+  <p class="section-lead">
+    The live website is a dashboard connected to the real API. Click <strong>Run live demo</strong> on
+    the Overview page and it sends real traffic in four phases (normal use, a scraper, a login attack,
+    and calm) while explaining every decision in plain English.
+  </p>
+
+  <div class="feature-grid">
+    <div class="feature-card">
+      <div class="feature-icon"><svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg></div>
+      <h3>Overview</h3>
+      <p>Live decisions per second, allowed share, server-side decision latency, the active algorithm, busiest clients with their RL-adjusted limits, and the guided live demo.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon"><svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
+      <h3>Playground</h3>
+      <p>Send bursts or a steady stream of real requests and watch each 200 or 429 arrive, with the deciding algorithm, decisions per second, and remaining quota.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon"><svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 4v16"/></svg></div>
+      <h3>Algorithm Race</h3>
+      <p>The same traffic hits all four algorithms at once in an isolated sandbox. Across a window boundary, Fixed Window admits twice the limit while Sliding Window holds it exactly.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon"><svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+      <h3>RL Agent</h3>
+      <p>Each client's enforced limit against its rule, the exploration rate, reward per window, and a log of every decision the agent made.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon"><svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/></svg></div>
+      <h3>AI Analyst</h3>
+      <p>Run a Claude analysis with your admin key, read the findings, and apply recommended rule changes with one click.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon"><svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-3-6.7"/><path d="M21 4v5h-5"/></svg></div>
+      <h3>Built to Be Watched</h3>
+      <p>Charts update every two seconds, numbers animate as they change, and the demo keeps running while you move between pages.</p>
+    </div>
+  </div>
+  <div class="cta-group" style="margin-top: 32px;">
+    <a class="btn btn-primary" href="https://drl-distributed-rate-limiter.vercel.app" target="_blank" rel="noopener">Open the Live Website</a>
+  </div>
+</section>
+
 <!-- STACK -->
 <section id="stack">
   <div class="section-label">Technology Stack</div>
   <h2>Built With</h2>
   <p class="section-lead">
-    Every component was selected for production readiness, not prototype convenience.
+    The API, the Redis store, and the dashboard are each deployed separately and tested in CI.
   </p>
 
   <div class="stack-grid">
     <div class="stack-item">
-      <div class="stack-name">Python 3.11</div>
-      <div class="stack-role">Primary language</div>
+      <div class="stack-name">Python 3.12</div>
+      <div class="stack-role">API language</div>
     </div>
     <div class="stack-item">
       <div class="stack-name">FastAPI</div>
-      <div class="stack-role">Async HTTP API framework</div>
+      <div class="stack-role">Async HTTP API</div>
     </div>
     <div class="stack-item">
-      <div class="stack-name">Redis</div>
-      <div class="stack-role">Distributed state store</div>
-    </div>
-    <div class="stack-item">
-      <div class="stack-name">PostgreSQL</div>
-      <div class="stack-role">Policy and metrics persistence</div>
-    </div>
-    <div class="stack-item">
-      <div class="stack-name">Prometheus</div>
-      <div class="stack-role">Metrics collection and exposure</div>
-    </div>
-    <div class="stack-item">
-      <div class="stack-name">OpenTelemetry</div>
-      <div class="stack-role">Distributed trace instrumentation</div>
-    </div>
-    <div class="stack-item">
-      <div class="stack-name">Jaeger</div>
-      <div class="stack-role">Trace visualization backend</div>
-    </div>
-    <div class="stack-item">
-      <div class="stack-name">Docker Compose</div>
-      <div class="stack-role">Full local stack orchestration</div>
+      <div class="stack-name">Redis + Lua</div>
+      <div class="stack-role">Atomic decisions, shared counters</div>
     </div>
     <div class="stack-item">
       <div class="stack-name">NumPy</div>
-      <div class="stack-role">Q-table computation (no ML framework)</div>
+      <div class="stack-role">Q-tables (no ML framework)</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Claude API</div>
+      <div class="stack-role">AI traffic analyst</div>
     </div>
     <div class="stack-item">
       <div class="stack-name">Pydantic v2</div>
-      <div class="stack-role">Request and response validation</div>
+      <div class="stack-role">Validation and structured output</div>
     </div>
     <div class="stack-item">
-      <div class="stack-name">Locust</div>
-      <div class="stack-role">Load and performance testing</div>
+      <div class="stack-name">React + TypeScript</div>
+      <div class="stack-role">Live dashboard (TanStack Query)</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Recharts + Framer Motion</div>
+      <div class="stack-role">Charts and transitions</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Prometheus</div>
+      <div class="stack-role">Metrics at /metrics</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">OpenTelemetry</div>
+      <div class="stack-role">OTLP tracing (Jaeger locally)</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Docker</div>
+      <div class="stack-role">Container image</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Railway</div>
+      <div class="stack-role">API and Redis hosting</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">Vercel</div>
+      <div class="stack-role">Dashboard hosting and API proxy</div>
+    </div>
+    <div class="stack-item">
+      <div class="stack-name">pytest + Vitest</div>
+      <div class="stack-role">110+ automated tests</div>
     </div>
     <div class="stack-item">
       <div class="stack-name">GitHub Actions</div>
-      <div class="stack-role">CI/CD pipeline automation</div>
+      <div class="stack-role">CI: tests, lint, security, build</div>
     </div>
   </div>
 </section>
@@ -797,28 +902,35 @@
 <!-- QUICKSTART -->
 <section id="quickstart">
   <div class="section-label">Quickstart</div>
-  <h2>Up in 60 Seconds</h2>
+  <h2>Run It Yourself</h2>
   <p class="section-lead">
-    The full stack (API, Redis, PostgreSQL, Jaeger, Prometheus) starts with a single command.
+    The <a href="https://drl-distributed-rate-limiter.vercel.app" target="_blank" rel="noopener">live website</a> needs nothing installed.
+    To run everything on your own machine you need Docker and Node.js 20 or newer.
   </p>
 
   <pre><span class="code-comment"># Clone the repository</span>
 git clone https://github.com/apatha32/DRL-Distributed-Rate-Limiter-.git
 cd DRL-Distributed-Rate-Limiter-
 
-<span class="code-comment"># Start the full stack</span>
-docker-compose up --build
+<span class="code-comment"># Start Redis and the API (bound to localhost only)</span>
+docker network create drl
+docker run -d --name drl-redis --network drl redis:7-alpine
+docker build -t drl-api .
+docker run -d --name drl-api --network drl -p 127.0.0.1:8000:8000 \
+  -e <span class="code-key">REDIS_URL</span>=<span class="code-val">redis://drl-redis:6379/0</span> \
+  -e <span class="code-key">ADMIN_API_KEY</span>=<span class="code-val">dev-admin-key</span> \
+  drl-api
 
-<span class="code-comment"># Check a rate limit (allow)</span>
-curl -X POST http://localhost:8000/v1/check \
-  -H "Content-Type: application/json" \
-  -d '<span class="code-str">{"client_id": "demo", "limit_key": "api", "cost": 1}</span>'
+<span class="code-comment"># Start the dashboard, then open http://localhost:5173 and click Run live demo</span>
+cd dashboard &amp;&amp; npm install &amp;&amp; npm run dev
 
-<span class="code-comment"># Enable the RL adaptive agent</span>
-<span class="code-key">ENABLE_RL</span>=<span class="code-val">true</span> docker-compose up --build
-
-<span class="code-comment"># Inspect RL diagnostics for a client</span>
-curl http://localhost:8000/v1/rl/diagnostics/demo</pre>
+<span class="code-comment"># Or from a terminal: 60 requests for client_b (limit 50 per minute)</span>
+for i in $(seq 60); do
+  curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8000/v1/check \
+    -H "Content-Type: application/json" -d '<span class="code-str">{"client_id": "client_b"}</span>'
+done | sort | uniq -c
+<span class="code-comment">#   50 200</span>
+<span class="code-comment">#   10 429</span></pre>
 </section>
 
 <!-- CTA -->
