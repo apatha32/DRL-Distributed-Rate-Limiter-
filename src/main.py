@@ -54,6 +54,8 @@ from src.metrics import (
     check_latency,
     client_totals,
     get_registry,
+    latency_percentiles_ms,
+    record_decision_latency,
 )
 from src.models import (
     AnalysisRecord,
@@ -64,6 +66,8 @@ from src.models import (
     RuleInfo,
     HealthResponse,
     RLDiagnosticsResponse,
+    SandboxCheckRequest,
+    StatsResponse,
 )
 
 # Configure logging with correlation IDs
@@ -85,6 +89,8 @@ redis_circuit_breaker = CircuitBreaker(
 )
 
 analyst = TrafficAnalyst()
+STARTED_AT = time.time()
+STATS_MAX_CLIENTS = 50
 
 
 async def rl_update_loop():
@@ -126,6 +132,7 @@ async def lifespan(app: FastAPI):
     # Drop objects bound to the Redis client we are about to close
     global _limiter, _analysis_quota
     _limiter = _analysis_quota = None
+    _sandbox_limiters.clear()
     await RedisClient.close()
     logger.info(f"[{SERVICE_NAME}] Service shutdown.")
 
@@ -148,7 +155,7 @@ if CORS_ORIGINS:
         allow_methods=["GET", "POST"],
         allow_headers=["Content-Type", "X-API-Key", "X-Correlation-ID"],
         expose_headers=[
-            "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset",
+            "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Algorithm",
             "Retry-After", "X-Correlation-ID",
         ],
     )
@@ -163,6 +170,11 @@ _ALGORITHMS = {
 }
 _limiter = None
 _analysis_quota: Optional[TokenBucketLimiter] = None
+_sandbox_limiters: Dict[str, Any] = {}
+SANDBOX_MAX_PER_MIN = 3000  # across all sandbox sessions on this node
+# Internal limiter keys start with "#", which client IDs can't contain (models.ID_PATTERN),
+# so no API caller can share or exhaust them.
+INTERNAL = "#"
 
 
 async def get_limiter():
@@ -207,8 +219,10 @@ def apply_rule(rule: UpdateRuleRequest) -> RuleInfo:
     return RuleInfo(**rule.model_dump())
 
 
-def _rate_limit_headers(limit: int, remaining: int, retry_after_ms: int, window: int) -> Dict[str, str]:
+def _rate_limit_headers(limit: int, remaining: int, retry_after_ms: int, window: int,
+                        algorithm: str = ALGORITHM.value) -> Dict[str, str]:
     headers = {
+        "X-RateLimit-Algorithm": algorithm,
         "X-RateLimit-Limit": str(limit),
         "X-RateLimit-Remaining": str(remaining),
         "X-RateLimit-Reset": str(math.ceil(retry_after_ms / 1000) if retry_after_ms else window),
@@ -272,7 +286,9 @@ async def check_limit(request: CheckLimitRequest, response: Response):
 
     with check_latency.time():
         try:
+            started = time.perf_counter()
             limit, allowed, remaining, retry_after_ms = await redis_circuit_breaker.call_async(decide)
+            record_decision_latency(time.perf_counter() - started)
         except Exception as e:
             reason = "circuit_breaker_open" if isinstance(e, CircuitBreakerOpen) else "check"
             logger.error(f"Rate limit check failed ({reason}): {e}")
@@ -291,6 +307,7 @@ async def check_limit(request: CheckLimitRequest, response: Response):
                 limit=rate,
                 window=window,
                 reset_at=time.time() + window,
+                algorithm=ALGORITHM.value,
             )
 
     if allowed:
@@ -306,6 +323,7 @@ async def check_limit(request: CheckLimitRequest, response: Response):
         limit=limit,
         window=window,
         reset_at=time.time() + int(headers["X-RateLimit-Reset"]),
+        algorithm=ALGORITHM.value,
     )
     if not allowed:
         return JSONResponse(
@@ -317,13 +335,62 @@ async def check_limit(request: CheckLimitRequest, response: Response):
     return body
 
 
+@app.post(
+    "/v1/sandbox/check",
+    response_model=CheckLimitResponse,
+    tags=["Sandbox"],
+    responses={429: {"model": CheckLimitResponse, "description": "Rate limit exceeded"}},
+)
+async def sandbox_check(request: SandboxCheckRequest):
+    """
+    Run one decision with any algorithm and an ad-hoc limit, in an isolated keyspace
+    (`sandbox:<session_id>`). Used by the dashboard to compare algorithms side by side.
+    Never touches real clients, rules, metrics, or the RL agent, so it can't be used to
+    get extra quota. Sandbox traffic as a whole is itself rate limited.
+    """
+    redis_client = await get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
+    if "_quota" not in _sandbox_limiters:
+        _sandbox_limiters["_quota"] = TokenBucketLimiter(redis_client)
+    within_quota, _, quota_retry_ms = await _sandbox_limiters["_quota"].check_limit(
+        f"{INTERNAL}sandbox", "all", rate=SANDBOX_MAX_PER_MIN, window=60
+    )
+    if not within_quota:
+        raise HTTPException(
+            status_code=429,
+            detail="Sandbox is busy; try again shortly",
+            headers={"Retry-After": str(max(1, math.ceil(quota_retry_ms / 1000)))},
+        )
+
+    algorithm = RateLimitAlgorithm(request.algorithm)
+    if algorithm.value not in _sandbox_limiters:
+        _sandbox_limiters[algorithm.value] = _ALGORITHMS[algorithm](redis_client)
+    allowed, remaining, retry_after_ms = await _sandbox_limiters[algorithm.value].check_limit(
+        client_id=f"{INTERNAL}sandbox:{request.session_id}",
+        limit_key="race",
+        rate=request.rate,
+        window=request.window,
+        cost=request.cost,
+    )
+    headers = _rate_limit_headers(request.rate, remaining, retry_after_ms, request.window, algorithm.value)
+    body = CheckLimitResponse(
+        allowed=allowed,
+        remaining=remaining,
+        retry_after_ms=retry_after_ms,
+        limit=request.rate,
+        window=request.window,
+        reset_at=time.time() + int(headers["X-RateLimit-Reset"]),
+        algorithm=algorithm.value,
+    )
+    return JSONResponse(status_code=200 if allowed else 429, content=body.model_dump(), headers=headers)
+
+
 @app.get("/metrics", tags=["Metrics"])
 async def metrics():
     """Prometheus metrics endpoint (text exposition format)."""
     return Response(content=generate_latest(get_registry()), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.get("/v1/rl/diagnostics/{client_id}", response_model=RLDiagnosticsResponse, tags=["RL"])
+@app.get("/v1/rl/diagnostics/{client_id:path}", response_model=RLDiagnosticsResponse, tags=["RL"])
 async def rl_diagnostics(client_id: str):
     """
     Return RL agent diagnostics for a specific client.
@@ -332,11 +399,58 @@ async def rl_diagnostics(client_id: str):
     if not ENABLE_RL:
         return RLDiagnosticsResponse(client_id=client_id, rl_enabled=False)
 
-    diag = get_agent().get_diagnostics(client_id)
+    agent = get_agent()
+    diag = agent.get_diagnostics(client_id)
     return RLDiagnosticsResponse(
         client_id=client_id,
         rl_enabled=True,
+        recent_decisions=agent.get_history(client_id) if diag else None,
         **diag,
+    )
+
+
+@app.get("/v1/stats", response_model=StatsResponse, tags=["Diagnostics"])
+async def stats():
+    """
+    Live, read-only snapshot of this node for the dashboard: totals, server-side
+    decision latency percentiles, and the busiest clients with their rule and the
+    limit currently enforced (RL-adjusted when enabled). Counters are per node and
+    reset on restart.
+    """
+    totals = client_totals()
+    agent = get_agent() if ENABLE_RL else None
+    clients = []
+    for (client_id, endpoint), counts in totals.items():
+        rule = get_rate_limit_rule(client_id, endpoint)
+        tracked = agent.peek(agent_key(client_id, endpoint)) if agent else None
+        clients.append({
+            "client_id": client_id,
+            "endpoint": endpoint,
+            "allowed": counts["allowed"],
+            "blocked": counts["blocked"],
+            "rule_rate": rule["rate"],
+            "rule_window": rule["window"],
+            "effective_limit": tracked["limit"] if tracked else rule["rate"],
+            "rl_epsilon": tracked["epsilon"] if tracked else None,
+        })
+    clients.sort(key=lambda c: c["allowed"] + c["blocked"], reverse=True)
+
+    return StatsResponse(
+        generated_at=time.time(),
+        uptime_sec=round(time.time() - STARTED_AT, 1),
+        node=SERVICE_NAME,
+        algorithm=ALGORITHM.value,
+        rl_enabled=ENABLE_RL,
+        rl_update_interval_sec=RL_UPDATE_INTERVAL,
+        fail_mode=FAIL_MODE.value,
+        circuit_breaker=redis_circuit_breaker.get_state(),
+        totals={
+            "allowed": sum(c["allowed"] for c in clients),
+            "blocked": sum(c["blocked"] for c in clients),
+        },
+        latency_ms=latency_percentiles_ms(),
+        clients=clients[:STATS_MAX_CLIENTS],
+        clients_total=len(clients),
     )
 
 
@@ -413,7 +527,7 @@ async def create_analysis():
     redis_client = await get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
     _analysis_quota = _analysis_quota or TokenBucketLimiter(redis_client)
     allowed, _, retry_after_ms = await _analysis_quota.check_limit(
-        "admin", "ai_analysis", rate=ANALYST_MAX_PER_HOUR, window=3600
+        f"{INTERNAL}admin", "ai_analysis", rate=ANALYST_MAX_PER_HOUR, window=3600
     )
     if not allowed:
         raise HTTPException(

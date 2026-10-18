@@ -9,6 +9,98 @@ A tabular Q-learning agent sits on top of the limiter: every 10 seconds it obser
 ![Docker Build & Push](https://github.com/apatha32/DRL-Distributed-Rate-Limiter-/workflows/Docker%20Build%20&%20Push/badge.svg?branch=main)
 ![Security Checks](https://github.com/apatha32/DRL-Distributed-Rate-Limiter-/workflows/Security%20Checks/badge.svg?branch=main)
 
+## How to run a demo
+
+The dashboard has a **Run live demo** button on the Overview page. It sends real requests to the API and explains, in plain English, what the limiter did with them.
+
+### On the deployed site
+
+1. Open the dashboard (your Vercel URL).
+2. On the Overview page, click **Run live demo**.
+3. Watch the box under the button. It shows which phase is running, live counters, and a "What just happened" feed.
+4. Browse other pages while it runs. A "Demo running" button in the header stops it from anywhere. It also stops by itself after 15 minutes.
+
+### On your machine
+
+You need Docker and Node.js 20 or newer.
+
+```bash
+# 1. Start Redis and the API (ports bound to localhost only)
+docker network create drl
+docker run -d --name drl-redis --network drl redis:7-alpine
+docker build -t drl-api .
+docker run -d --name drl-api --network drl -p 127.0.0.1:8000:8000 \
+  -e REDIS_URL=redis://drl-redis:6379/0 \
+  -e ADMIN_API_KEY=dev-admin-key \
+  drl-api
+# Optional: add  -e ANTHROPIC_API_KEY=sk-ant-...  to enable the AI analyst
+
+# 2. Start the dashboard (it forwards /v1 and /health to the API on port 8000)
+cd dashboard
+npm install
+npm run dev
+```
+
+Open http://localhost:5173 and click **Run live demo**. To clean up afterwards, run `docker rm -f drl-api drl-redis`.
+
+### What the demo does
+
+It loops through four phases and sends at most about 10 requests per second in total.
+
+| Phase | Length | Traffic | What you should see |
+|---|---|---|---|
+| 1. Normal traffic | 30 s | `demo_web` and `demo_mobile` send 1 to 2 requests per second | Everything is allowed |
+| 2. A scraper floods the API | 35 s | `demo_scraper` adds 7 requests per second | The scraper uses up its allowance, then gets 429 responses. The regular apps are not affected. |
+| 3. Someone hammers a login page | 30 s | 4 requests per second to `client_a /login` | Login has a stricter rule (20 per minute), so it is cut off quickly |
+| 4. Things calm down | 25 s | Only the regular apps | Limits refill. The RL agent may adjust limits based on what it saw. |
+
+The feed explains:
+
+- the first request, step by step;
+- the moment each client is first blocked;
+- a summary every 5 seconds of what each client sent and how much was allowed;
+- any time the RL agent raises or lowers a client's limit, with the traffic it based that on.
+
+### Other things to try
+
+- **Playground:** send your own bursts or a steady stream and watch each 200 or 429 come back, with charts of decisions per second and remaining quota.
+- **Algorithms, Live algorithm race:** the same traffic hits all four algorithms at once. Choose "Window boundary" to watch Fixed Window let through twice the limit.
+- **AI Analyst:** enter your admin key and click **Run analysis** for Claude's summary and suggested rule changes. This needs `ANTHROPIC_API_KEY` on the API.
+- **From a terminal:** send 60 requests for `client_b` (limit 50 per minute) and count the answers:
+
+```bash
+for i in $(seq 60); do
+  curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8000/v1/check \
+    -H 'Content-Type: application/json' -d '{"client_id": "client_b"}'
+done | sort | uniq -c
+#   50 200
+#   10 429
+```
+
+## What happens when you send a request
+
+This is the path of one `POST /v1/check`, from the moment it arrives until the answer goes back.
+
+1. **The request arrives.** It says who is asking (`client_id`), optionally which endpoint (`limit_key`, for example `login`), and how much it costs (`cost`, usually 1).
+2. **The input is checked.** Client IDs may only contain letters, numbers and `_ . : @ / -`, and the cost must be between 1 and 10,000. Anything else is rejected with `422` before the limiter does any work.
+3. **The rule is looked up.** The API finds the rule for this client and endpoint, for example 20 requests per 60 seconds for `client_a /login`. Clients without a rule get the default of 100 per 60 seconds.
+4. **The RL agent is asked for the current limit.** If adaptive limits are on, the Q-learning agent may have moved this client's limit up or down from the rule. This is a read from memory, with no network call.
+5. **One atomic decision runs in Redis.** The API runs a single Lua script for the configured algorithm. Inside Redis, the script:
+   - reads the client's state (tokens, bucket level, window count or timestamp log);
+   - decides allow or block;
+   - writes the new state back.
+
+   Redis runs the whole script as one step, so two servers handling the same client at the same moment can never both spend the last unit of quota. The script uses the Redis clock, so servers with slightly different clocks still agree. This takes about 0.1 ms in Redis.
+6. **The circuit breaker watches the Redis call.** If Redis keeps failing, the breaker opens and the API stops waiting on it. With `FAIL_MODE=open`, requests are allowed and marked `X-RateLimit-Degraded: true`. With `FAIL_MODE=closed`, they get `503`.
+7. **The outcome is recorded.** Prometheus counters and the latency sample are updated for `/metrics` and the dashboard. The RL agent is told whether the request was allowed or blocked.
+8. **The answer goes back.**
+   - Allowed requests get `200`; blocked requests get `429 Too Many Requests`.
+   - Both include the decision body and the headers `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` and `X-RateLimit-Algorithm`.
+   - A blocked answer also includes `Retry-After`, the number of seconds to wait.
+9. **Later, in the background.** Every 10 seconds the RL agent looks at each client's last window (requests per second, share blocked, and whether traffic is rising). It updates what it has learned and may raise, keep, or lower that client's limit by 10%. The next request from that client uses the new limit.
+
+Claude is never part of this path. The AI analyst only runs when an admin asks for an analysis, so it adds no latency to any request.
+
 ## Architecture
 
 ```
@@ -47,6 +139,8 @@ python scripts/benchmark.py -n 20000
 
 Atomicity is tested: `tests/test_algorithms.py::test_concurrent_nodes_never_exceed_limit` fires 8 concurrent "nodes" with separate connections at one Redis and asserts exactly `rate` requests are admitted.
 
+The dashboard's **live algorithm race** sends identical traffic to all four algorithms through `/v1/sandbox/check`. With a limit of 10 per 10 s and 20 requests straddling a window boundary within ~1.4 s, the real limiter admits Fixed Window 20 (2.0×), Token Bucket 11, Leaky Bucket 11, and Sliding Window 10.
+
 ## Adaptive limits (Q-learning)
 
 - One Q-table per client and endpoint. States are traffic level × block ratio × RPS trend (27 states).
@@ -81,11 +175,13 @@ Analyses are stored in Redis for `ANALYSIS_TTL_SEC` (default 24 h). The **AI Ana
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/v1/check` | – | Rate-limit decision. 200 allowed, 429 blocked. |
-| GET | `/health` | – | Liveness; `degraded` when Redis is unreachable |
-| GET | `/metrics` | – | Prometheus text format |
-| GET | `/v1/rl/diagnostics/{client_id}` | – | RL agent state for a client |
-| GET | `/circuit-breaker-status` | – | Redis circuit breaker state |
+| POST | `/v1/check` | None | Rate-limit decision. 200 allowed, 429 blocked. |
+| GET | `/health` | None | Liveness; `degraded` when Redis is unreachable |
+| GET | `/metrics` | None | Prometheus text format |
+| POST | `/v1/sandbox/check` | None | Decision with any algorithm and an ad-hoc limit in an isolated keyspace (powers the dashboard's algorithm race). Never touches real clients, rules, metrics or the RL agent, and is itself rate limited. |
+| GET | `/v1/stats` | None | Live node snapshot for the dashboard: totals, decision-latency percentiles, busiest clients with rule and enforced limit |
+| GET | `/v1/rl/diagnostics/{client_id}` | None | RL agent state and recent decisions for a client (`client` or `client/endpoint`) |
+| GET | `/circuit-breaker-status` | None | Redis circuit breaker state |
 | GET/POST | `/v1/admin/rules` | API key | List / create or update rules |
 | GET | `/v1/admin/ai/status` | API key | Analyst enabled? `?include_snapshot=true` previews what Claude sees |
 | POST | `/v1/admin/ai/analyses` | API key | Run an analysis |
@@ -100,12 +196,13 @@ curl -i -X POST https://<api>/v1/check \
   -d '{"client_id": "client_b", "limit_key": "global", "cost": 1}'
 
 HTTP/1.1 429 Too Many Requests
+x-ratelimit-algorithm: token_bucket
 x-ratelimit-limit: 50
 x-ratelimit-remaining: 0
 x-ratelimit-reset: 12
 retry-after: 12
 
-{"allowed": false, "remaining": 0, "retry_after_ms": 11873, "limit": 50, "window": 60, "reset_at": 1792338000.1}
+{"allowed": false, "remaining": 0, "retry_after_ms": 11873, "limit": 50, "window": 60, "reset_at": 1792338000.1, "algorithm": "token_bucket"}
 ```
 
 `limit` is the enforced limit, which the RL agent may have moved from the configured rule. If Redis is down and `FAIL_MODE=open`, requests are allowed with `X-RateLimit-Degraded: true`. With `FAIL_MODE=closed`, they get a 503.
@@ -114,18 +211,18 @@ retry-after: 12
 
 | Variable | Default | |
 |---|---|---|
-| `REDIS_URL` | – | Full Redis URL (takes precedence over `REDIS_HOST`/`REDIS_PORT`; set automatically on Railway) |
+| `REDIS_URL` | (not set) | Full Redis URL (takes precedence over `REDIS_HOST`/`REDIS_PORT`; set automatically on Railway) |
 | `ALGORITHM` | `token_bucket` | `token_bucket` · `leaky_bucket` · `fixed_window` · `sliding_window` |
 | `FAIL_MODE` | `open` | `open` allows on Redis failure, `closed` rejects |
-| `ENABLE_RL` | `false` (`true` in the image) | Q-learning adaptive limits |
+| `ENABLE_RL` | `false` (`true` in the Docker image) | Q-learning adaptive limits |
 | `RL_UPDATE_INTERVAL_SEC` | `10` | Seconds between RL observe/adjust cycles |
-| `ADMIN_API_KEY` | – | Required for `/v1/admin/*` (`openssl rand -hex 32`) |
-| `CORS_ORIGINS` | – | Comma-separated origins, e.g. the Vercel dashboard URL |
-| `ANTHROPIC_API_KEY` | – | Enables the AI analyst |
+| `ADMIN_API_KEY` | (not set) | Required for `/v1/admin/*` (`openssl rand -hex 32`) |
+| `CORS_ORIGINS` | (not set) | Comma-separated origins, e.g. the Vercel dashboard URL |
+| `ANTHROPIC_API_KEY` | (not set) | Enables the AI analyst |
 | `ANALYST_MODEL` | `claude-opus-5-5` | Claude model for analyses |
 | `ANALYST_EFFORT` | `medium` | `low` · `medium` · `high` |
 | `ANALYST_MAX_PER_HOUR` | `20` | Analysis quota |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | – | Enables OpenTelemetry tracing to any OTLP backend |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (not set) | Enables OpenTelemetry tracing to any OTLP backend |
 
 See `.env.example` for the full list.
 
@@ -151,7 +248,7 @@ See `.env.example` for the full list.
 
 ```bash
 docker-compose up --build            # 2 limiter nodes behind nginx on :8000, Redis, Postgres, Jaeger (:16686)
-cd dashboard && npm install && npm run dev   # :3000, proxies /v1 to :8000
+cd dashboard && npm install && npm run dev   # :5173, proxies /v1 to :8000
 ```
 
 Compose sets `ADMIN_API_KEY=dev-admin-key` unless you export your own. Export `ANTHROPIC_API_KEY` to try the analyst.
@@ -181,7 +278,7 @@ src/
   redis_client.py      asyncio Redis client (REDIS_URL / host+port / DEMO_MODE fakeredis)
   metrics.py           Prometheus metrics
   tracing.py           OpenTelemetry OTLP setup
-dashboard/             React + Vite dashboard (Vercel)
+dashboard/             DRL Console: React + TypeScript live dashboard (Vercel), see dashboard/README.md
 scripts/benchmark.py   Decision-latency benchmark
 tests/                 Unit, API, integration, and load tests
 ```
@@ -189,7 +286,7 @@ tests/                 Unit, API, integration, and load tests
 ## Known limitations
 
 - Rules and RL state live in each node's memory. With several replicas, an admin or AI rule change applies only to the node that served it, and each node learns separately. The limiter counters themselves are shared in Redis. Moving rules and learned limits into Redis is the next step for multi-replica deployments.
-- Only the AI Analyst dashboard page calls the live API. The other pages show simulated data.
+- `/v1/stats` is public and read-only, so it shows client IDs and their counters to anyone with the URL. Put it behind the admin key if client IDs are sensitive in your deployment.
 
 ## License
 

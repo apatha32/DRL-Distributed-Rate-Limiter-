@@ -2,77 +2,77 @@
 @tailwind components;
 @tailwind utilities;
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+/* Dark ops console tokens (RGB channels so Tailwind can apply alpha). */
+:root {
+  color-scheme: dark;
+  --page: 13 13 13;          /* #0d0d0d */
+  --surface: 26 26 25;       /* #1a1a19  chart / card surface */
+  --raised: 35 35 34;        /* #232322  hover / inputs */
+  --grid: 44 44 42;          /* #2c2c2a  hairline gridlines */
+  --axis: 56 56 53;          /* #383835  baselines */
+  --ink: 240 239 236;        /* #f0efec  primary text */
+  --ink-2: 195 194 183;      /* #c3c2b7  secondary text */
+  --muted: 137 135 129;      /* #898781  labels, axes */
+  --accent: 57 135 229;      /* #3987e5  series 1 / brand accent */
+  --series-2: 217 89 38;     /* #d95926  series 2 */
+  --good: 12 163 12;         /* status colors: always paired with icon + label */
+  --warning: 250 178 25;
+  --serious: 236 131 90;
+  --critical: 208 59 59;
 }
 
-html {
-  scroll-behavior: smooth;
+@layer base {
+  html {
+    @apply bg-page text-ink antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply min-h-screen bg-page font-sans text-sm;
+  }
+  ::selection {
+    @apply bg-accent/30;
+  }
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent/70 ring-offset-2 ring-offset-page;
+  }
 }
 
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-/* Scrollbar Styling */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.5);
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(14, 165, 233, 0.6);
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(14, 165, 233, 0.8);
-}
-
-/* Glass effect */
-.glass {
-  background: rgba(15, 23, 42, 0.8);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(148, 163, 184, 0.1);
-}
-
-/* Gradient text */
-.gradient-text {
-  background: linear-gradient(135deg, #0ea5e9 0%, #06b6d4 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-/* Smooth transitions */
 @layer components {
   .card {
-    @apply p-6 rounded-lg glass transition-all duration-300 hover:shadow-lg hover:shadow-cyan-500/10;
+    @apply rounded-xl border border-white/10 bg-surface transition-[border-color,box-shadow,transform] duration-200;
   }
-  
-  .badge {
-    @apply inline-flex items-center px-3 py-1 rounded-full text-xs font-medium;
+  .card-interactive {
+    @apply card hover:-translate-y-0.5 hover:border-white/20 hover:shadow-lg hover:shadow-black/40;
   }
-  
   .btn {
-    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 hover:scale-105 active:scale-95;
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium
+      transition-[background-color,border-color,color,transform] duration-150 active:scale-[0.98]
+      disabled:pointer-events-none disabled:opacity-50;
   }
-  
   .btn-primary {
-    @apply btn bg-cyan-600 text-white hover:bg-cyan-500;
+    @apply btn bg-accent text-white hover:bg-accent/90;
   }
-  
-  .btn-secondary {
-    @apply btn bg-slate-700 text-slate-50 hover:bg-slate-600;
+  .btn-ghost {
+    @apply btn border border-white/10 bg-transparent text-ink-2 hover:border-white/20 hover:bg-raised hover:text-ink;
   }
+  .input {
+    @apply w-full rounded-lg border border-white/10 bg-page px-3 py-2 text-sm text-ink placeholder:text-muted
+      transition-colors focus:border-accent/60 focus:outline-none;
+  }
+  .label {
+    @apply text-xs font-medium text-muted;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Thin, quiet scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--axis)) transparent;
+}
+
+input[type='range'] {
+  accent-color: rgb(var(--accent));
 }

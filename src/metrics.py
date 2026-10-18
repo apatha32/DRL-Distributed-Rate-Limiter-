@@ -2,6 +2,7 @@
 Metrics collection and exposure.
 """
 import logging
+from collections import deque
 from prometheus_client import Counter, Histogram, Gauge, CollectorRegistry
 
 logger = logging.getLogger(__name__)
@@ -93,3 +94,23 @@ def client_totals() -> dict:
             key = (sample.labels["client_id"], sample.labels["endpoint"])
             totals.setdefault(key, {"allowed": 0, "blocked": 0})[field] = int(sample.value)
     return totals
+
+
+# Recent server-side decision latencies (seconds) for live percentiles
+_recent_latencies: deque = deque(maxlen=2048)
+
+
+def record_decision_latency(seconds: float) -> None:
+    _recent_latencies.append(seconds)
+
+
+def latency_percentiles_ms() -> dict:
+    """p50/p95/p99 over the most recent decisions on this node (None when idle)."""
+    if not _recent_latencies:
+        return {"p50": None, "p95": None, "p99": None, "samples": 0}
+    ordered = sorted(_recent_latencies)
+
+    def pct(p: float) -> float:
+        return round(ordered[min(len(ordered) - 1, int(len(ordered) * p))] * 1000, 3)
+
+    return {"p50": pct(0.50), "p95": pct(0.95), "p99": pct(0.99), "samples": len(ordered)}

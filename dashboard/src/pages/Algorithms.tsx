@@ -1,305 +1,347 @@
-import React, { useState } from 'react'
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
-import { BookOpen, Zap, Clock } from 'lucide-react'
-import ChartCard from '../components/ChartCard'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
+import {
+  Bar, BarChart, CartesianGrid, LabelList, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from 'recharts'
+import { Check, Flag, Loader2, Minus, Play } from 'lucide-react'
+import clsx from 'clsx'
+import { AlgorithmGlyph } from '../components/AlgorithmGlyph'
+import { ChartTooltip } from '../components/ChartTooltip'
+import {
+  Card, CardHeader, ChartReveal, Chip, EmptyState, Legend, PageHeader, Segmented, Stagger, StaggerItem,
+} from '../components/ui'
+import { AlgorithmId, ALGORITHMS, peakPerWindow, RACE_PATTERNS, RacePattern, raceSchedule } from '../lib/algorithms'
+import { api, errorMessage } from '../lib/api'
+import { useToast } from '../lib/context'
+import { useStats } from '../lib/queries'
+import { axisTick, color, ease } from '../lib/theme'
 
-// Latencies measured with scripts/benchmark.py (async client, 20K checks/algorithm, Redis 7, same Docker network)
-const algorithms = [
-  {
-    id: 'token-bucket',
-    name: 'Token Bucket',
-    description: 'Each client has a bucket that refills continuously at rate/window tokens per second. Requests spend tokens; if too few remain, the request is denied.',
-    pros: ['Allows bursts', 'Smooth refill', 'O(1) state per client'],
-    cons: ['Bursts can briefly exceed average rate', 'Two parameters to reason about'],
-    latency: 0.098,
-    complexity: '1',
-    memory: 'Low',
-    accuracy: 'High',
-    bestFor: 'Bursty APIs',
-    color: '#0ea5e9',
-    code: `-- one atomic Lua script (EVALSHA)
-local tokens, ts = HMGET(key, 'tokens', 'ts')
-tokens = min(capacity, tokens + (now - ts) * refill_per_ms)
-if tokens >= cost then
-  tokens = tokens - cost; allowed = 1
-else
-  retry_ms = ceil((cost - tokens) / refill_per_ms)
-end
-HSET(key, 'tokens', tokens, 'ts', now)`,
-  },
-  {
-    id: 'leaky-bucket',
-    name: 'Leaky Bucket',
-    description: 'Each request pours water into a bucket that drains at a constant rate. Requests that would overflow the bucket are rejected, enforcing a smooth outflow.',
-    pros: ['Smooth, constant output rate', 'O(1) state per client', 'Bounded bursts'],
-    cons: ['Less tolerant of legitimate spikes', 'Full bucket recovers slowly'],
-    latency: 0.097,
-    complexity: '1',
-    memory: 'Low',
-    accuracy: 'High',
-    bestFor: 'Protecting fragile backends',
-    color: '#6366f1',
-    code: `-- one atomic Lua script (EVALSHA)
-local level, ts = HMGET(key, 'level', 'ts')
-level = max(0, level - (now - ts) * leak_per_ms)
-if level + cost <= capacity then
-  level = level + cost; allowed = 1
-else
-  retry_ms = ceil((level + cost - capacity) / leak_per_ms)
-end
-HSET(key, 'level', level, 'ts', now)`,
-  },
-  {
-    id: 'fixed-window',
-    name: 'Fixed Window',
-    description: 'Divides time into aligned windows with one counter each. A request is allowed while the counter plus its cost stays within the limit.',
-    pros: ['Simplest implementation', 'O(1) operations', 'Lowest memory'],
-    cons: ['Boundary spike issue', 'Up to 2x rate across a boundary'],
-    latency: 0.096,
-    complexity: '1',
-    memory: 'Low',
-    accuracy: 'Medium',
-    bestFor: 'Simple quotas',
-    color: '#06b6d4',
-    code: `-- one atomic Lua script (EVALSHA)
-local win_start = now - (now % window_ms)
-local start, count = HMGET(key, 'start', 'count')
-if start ~= win_start then count = 0 end
-if count + cost <= rate then
-  HSET(key, 'start', win_start, 'count', count + cost)
-  allowed = 1
-else
-  retry_ms = win_start + window_ms - now
-end`,
-  },
-  {
-    id: 'sliding-window',
-    name: 'Sliding Window',
-    description: 'Keeps a sorted-set log of request timestamps and counts those inside a true rolling window before admitting a request.',
-    pros: ['Exact rate limiting', 'No boundary spikes', 'Blocked requests cost nothing'],
-    cons: ['Memory grows with request rate', 'O(log N) per operation'],
-    latency: 0.101,
-    complexity: 'log N',
-    memory: 'High',
-    accuracy: 'Very High',
-    bestFor: 'Strict enforcement',
-    color: '#0891b2',
-    code: `-- one atomic Lua script (EVALSHA)
-ZREMRANGEBYSCORE(key, '-inf', now - window_ms)
-local count = ZCARD(key)
-if count + cost <= rate then
-  ZADD(key, now, nonce)   -- once per unit of cost
-  allowed = 1
-else
-  retry_ms = oldest_needed + window_ms - now
-end`,
-  },
-]
+interface RaceResult {
+  t: number // seconds since the race started
+  algorithm: AlgorithmId
+  allowed: boolean
+}
 
-// Illustrative behaviour under the same bursty traffic pattern
-const comparisonData = [
-  { time: '0s', 'Token Bucket': 1000, 'Leaky Bucket': 1000, 'Fixed Window': 1000, 'Sliding Window': 1000 },
-  { time: '5s', 'Token Bucket': 950, 'Leaky Bucket': 900, 'Fixed Window': 800, 'Sliding Window': 920 },
-  { time: '10s', 'Token Bucket': 1050, 'Leaky Bucket': 940, 'Fixed Window': 1000, 'Sliding Window': 980 },
-  { time: '15s', 'Token Bucket': 1100, 'Leaky Bucket': 960, 'Fixed Window': 800, 'Sliding Window': 1050 },
-  { time: '20s', 'Token Bucket': 1000, 'Leaky Bucket': 980, 'Fixed Window': 1000, 'Sliding Window': 1000 },
-  { time: '25s', 'Token Bucket': 950, 'Leaky Bucket': 960, 'Fixed Window': 800, 'Sliding Window': 920 },
-]
+const newSessionId = () =>
+  (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}${Math.random()}`).replace(/[^A-Za-z0-9]/g, '').slice(0, 32)
 
-// Measured per-decision latency (ms)
-const latencyComparison = [
-  { algorithm: 'Token Bucket', p50: 0.098, p95: 0.142, p99: 0.286 },
-  { algorithm: 'Leaky Bucket', p50: 0.097, p95: 0.111, p99: 0.131 },
-  { algorithm: 'Fixed Window', p50: 0.096, p95: 0.11, p99: 0.13 },
-  { algorithm: 'Sliding Window', p50: 0.101, p95: 0.118, p99: 0.171 },
-]
+function AlgorithmRace() {
+  const toast = useToast()
+  const [rate, setRate] = useState('10')
+  const [windowSec, setWindowSec] = useState('10')
+  const [pattern, setPattern] = useState<RacePattern>('boundary')
+  const [running, setRunning] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [results, setResults] = useState<RaceResult[]>([])
+  const [ran, setRan] = useState<{ rate: number; window: number } | null>(null)
+  const timers = useRef<number[]>([])
 
-export default function Algorithms() {
-  const [selectedAlgo, setSelectedAlgo] = useState(algorithms[0])
+  useEffect(() => () => timers.current.forEach(clearTimeout), [])
+
+  const run = async () => {
+    const r = Number(rate)
+    const w = Number(windowSec)
+    setRunning(true)
+    setResults([])
+    setProgress(0)
+    setRan({ rate: r, window: w })
+
+    let msToBoundary = 0
+    if (pattern === 'boundary') {
+      // Align to the server's clock: Fixed Window boundaries are server-time aligned
+      try {
+        const sent = Date.now()
+        const s = await api.stats()
+        const serverNow = s.generated_at * 1000 + (Date.now() - sent) / 2
+        msToBoundary = w * 1000 - (serverNow % (w * 1000))
+      } catch (err) {
+        toast({ variant: 'error', title: "Couldn't start the race", description: errorMessage(err) })
+        setRunning(false)
+        return
+      }
+    }
+
+    const schedule = raceSchedule(pattern, r, w, msToBoundary)
+    const end = schedule[schedule.length - 1]
+    const session = newSessionId()
+    const started = performance.now()
+    let failed = false
+    let outstanding = schedule.length
+
+    timers.current = schedule.map((at) =>
+      window.setTimeout(async () => {
+        try {
+          const decisions = await Promise.all(ALGORITHMS.map((a) => api.sandboxCheck(a.id, session, r, w)))
+          const t = (performance.now() - started) / 1000
+          setResults((prev) => [...prev, ...decisions.map((d, i) => ({ t, algorithm: ALGORITHMS[i].id, allowed: d.allowed }))])
+        } catch (err) {
+          if (!failed) {
+            failed = true
+            timers.current.forEach(clearTimeout)
+            toast({ variant: 'error', title: 'Race stopped', description: errorMessage(err) })
+            setRunning(false)
+          }
+        } finally {
+          setProgress(Math.min(1, at / end))
+          if (--outstanding === 0 && !failed) setRunning(false)
+        }
+      }, at),
+    )
+  }
+
+  const { points, summary } = useMemo(() => {
+    const sorted = [...results].sort((a, b) => a.t - b.t)
+    const cumulative = Object.fromEntries(ALGORITHMS.map((a) => [a.id, 0])) as Record<AlgorithmId, number>
+    const pts: Record<string, number>[] = [{ t: 0, ...cumulative }]
+    for (const res of sorted) {
+      if (res.allowed) cumulative[res.algorithm]++
+      const last = pts[pts.length - 1]
+      if (last.t === res.t) Object.assign(last, cumulative)
+      else pts.push({ t: res.t, ...cumulative })
+    }
+    const summary = ALGORITHMS.map((a) => {
+      const mine = results.filter((x) => x.algorithm === a.id)
+      const allowedTimes = mine.filter((x) => x.allowed).map((x) => x.t)
+      return {
+        ...a,
+        allowed: allowedTimes.length,
+        blocked: mine.length - allowedTimes.length,
+        peak: ran ? peakPerWindow(allowedTimes, ran.window) : 0,
+      }
+    })
+    return { points: pts, summary }
+  }, [results, ran])
+
+  const patternInfo = RACE_PATTERNS.find((p) => p.value === pattern)!
 
   return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold mb-2">Rate Limiting Algorithms</h1>
-        <p className="text-slate-400">Compare and understand different rate limiting strategies</p>
-      </div>
+    <Card>
+      <CardHeader
+        title={<span className="inline-flex items-center gap-2"><Flag className="h-4 w-4 text-accent" aria-hidden />Live algorithm race</span>}
+        subtitle="The same traffic hits all four algorithms at once, on the real limiter in an isolated sandbox."
+      />
+      <div className="space-y-5 p-5">
+        <div className="flex flex-wrap items-end gap-4">
+          <div className="space-y-1.5">
+            <span className="label block">Traffic pattern</span>
+            <Segmented<RacePattern> label="Traffic pattern" value={pattern} onChange={setPattern}
+              options={RACE_PATTERNS.map(({ value, label }) => ({ value, label }))} />
+          </div>
+          <label className="space-y-1.5">
+            <span className="label block">Limit</span>
+            <select className="input w-auto" value={rate} onChange={(e) => setRate(e.target.value)} disabled={running}>
+              {['5', '10', '20'].map((v) => <option key={v} value={v}>{v} requests</option>)}
+            </select>
+          </label>
+          <label className="space-y-1.5">
+            <span className="label block">Per window</span>
+            <select className="input w-auto" value={windowSec} onChange={(e) => setWindowSec(e.target.value)} disabled={running}>
+              {['5', '10'].map((v) => <option key={v} value={v}>{v} seconds</option>)}
+            </select>
+          </label>
+          <button className="btn-primary ml-auto" onClick={run} disabled={running}>
+            {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+            {running ? 'Racing…' : 'Start race'}
+          </button>
+        </div>
 
-      {/* Algorithm Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-        {algorithms.map((algo) => (
-          <div
-            key={algo.id}
-            onClick={() => setSelectedAlgo(algo)}
-            className={`card cursor-pointer border-2 transition-all ${
-              selectedAlgo.id === algo.id
-                ? 'border-cyan-500 ring-2 ring-cyan-500/50'
-                : 'border-slate-700 hover:border-slate-600'
-            }`}
-          >
-            <div className="flex items-start justify-between mb-4">
-              <h3 className="font-semibold text-lg">{algo.name}</h3>
-              <span className="text-xs font-mono bg-slate-700 px-2 py-1 rounded">{algo.latency}ms</span>
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.p key={pattern} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }} className="text-xs text-ink-2">
+            {patternInfo.description}
+          </motion.p>
+        </AnimatePresence>
+
+        <div className="h-1 overflow-hidden rounded-full bg-white/[0.06]" aria-hidden>
+          <motion.div className="h-full bg-accent" animate={{ width: `${(running || results.length ? progress : 0) * 100}%` }}
+            transition={{ duration: 0.3, ease }} />
+        </div>
+
+        {results.length === 0 && !running ? (
+          <EmptyState icon={Flag} title="Pick a pattern and start the race"
+            description="Window boundary is the most dramatic: Fixed Window admits twice the limit in about a second." />
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="text-xs text-muted">Requests admitted so far</span>
+              <Legend items={ALGORITHMS.map((a) => ({ label: a.name, color: a.color }))} />
             </div>
-            <p className="text-sm text-slate-400 mb-4 line-clamp-2">{algo.description}</p>
-            <div className="flex space-x-2">
-              <span className="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded">O({algo.complexity})</span>
+            <div className="h-72">
+              <ChartReveal>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={points} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                    <CartesianGrid vertical={false} stroke={color.grid} />
+                    <XAxis dataKey="t" type="number" domain={[0, 'dataMax']} tick={axisTick} tickLine={false}
+                      axisLine={{ stroke: color.axis }} tickFormatter={(v: number) => `${Math.round(v)}s`} />
+                    <YAxis tick={axisTick} tickLine={false} axisLine={false} width={36} allowDecimals={false} />
+                    <Tooltip cursor={{ stroke: color.axis }}
+                      content={<ChartTooltip labelFormatter={(v) => `${v.toFixed(1)}s`} valueFormatter={(v) => `${v} admitted`} />} />
+                    {ALGORITHMS.map((a) => (
+                      <Line key={a.id} dataKey={a.id} name={a.name} type="stepAfter" stroke={a.color} strokeWidth={2}
+                        dot={false} activeDot={{ r: 4, stroke: color.surface, strokeWidth: 2 }} isAnimationActive={false} />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartReveal>
             </div>
-          </div>
-        ))}
-      </div>
 
-      {/* Selected Algorithm Details */}
-      <div className="card">
-        <div className="flex items-start justify-between mb-6">
-          <div>
-            <h2 className="text-2xl font-bold mb-2">{selectedAlgo.name}</h2>
-            <p className="text-slate-400">{selectedAlgo.description}</p>
-          </div>
-          <div className="text-right">
-            <div className="text-3xl font-bold text-cyan-400">{selectedAlgo.latency}ms</div>
-            <div className="text-sm text-slate-400">p50 latency (measured)</div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-6">
-          <div>
-            <h4 className="font-semibold mb-3 flex items-center space-x-2">
-              <Zap className="w-4 h-4 text-green-400" />
-              <span>Advantages</span>
-            </h4>
-            <ul className="space-y-2">
-              {selectedAlgo.pros.map((pro, i) => (
-                <li key={i} className="text-sm text-slate-300 flex items-center space-x-2">
-                  <span className="w-2 h-2 rounded-full bg-green-400"></span>
-                  <span>{pro}</span>
-                </li>
+            <Stagger className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {summary.map((s) => (
+                <StaggerItem key={s.id}>
+                  <div className="rounded-lg border border-white/10 bg-page/60 p-4">
+                    <p className="flex items-center gap-2 text-xs text-ink-2">
+                      <span className="h-0.5 w-3 rounded-full" style={{ backgroundColor: s.color }} aria-hidden />
+                      {s.name}
+                    </p>
+                    <p className="mt-2 text-2xl font-semibold text-ink tabular">{s.allowed}<span className="ml-1 text-sm font-normal text-muted">admitted</span></p>
+                    <p className="mt-1 text-xs text-ink-2 tabular">
+                      {s.blocked} blocked · peak {s.peak} in any {ran?.window}s
+                      {ran && s.peak > ran.rate && <span className="ml-1 text-ink">({(s.peak / ran.rate).toFixed(1)}× limit)</span>}
+                    </p>
+                  </div>
+                </StaggerItem>
               ))}
-            </ul>
-          </div>
-          <div>
-            <h4 className="font-semibold mb-3 flex items-center space-x-2">
-              <Clock className="w-4 h-4 text-red-400" />
-              <span>Disadvantages</span>
-            </h4>
-            <ul className="space-y-2">
-              {selectedAlgo.cons.map((con, i) => (
-                <li key={i} className="text-sm text-slate-300 flex items-center space-x-2">
-                  <span className="w-2 h-2 rounded-full bg-red-400"></span>
-                  <span>{con}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+            </Stagger>
+          </>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function Yes({ v }: { v: boolean }) {
+  return v
+    ? <span className="inline-flex items-center gap-1 text-ink"><Check className="h-3.5 w-3.5 text-ink-2" aria-hidden />Yes</span>
+    : <span className="inline-flex items-center gap-1 text-ink-2"><Minus className="h-3.5 w-3.5" aria-hidden />No</span>
+}
+
+export default function Algorithms() {
+  const { data: stats } = useStats()
+  const [selectedId, setSelectedId] = useState<AlgorithmId>('token_bucket')
+  useEffect(() => {
+    if (stats?.algorithm) setSelectedId(stats.algorithm as AlgorithmId)
+  }, [stats?.algorithm])
+  const selected = ALGORITHMS.find((a) => a.id === selectedId)!
+
+  return (
+    <Stagger className="space-y-6">
+      <StaggerItem>
+        <PageHeader
+          title="Algorithms"
+          description="Every algorithm is one Redis Lua script: read, decide and write happen atomically in a single round trip, using the Redis server clock."
+        />
+      </StaggerItem>
+
+      <StaggerItem>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {ALGORITHMS.map((a) => {
+            const active = stats?.algorithm === a.id
+            return (
+              <button
+                key={a.id}
+                onClick={() => setSelectedId(a.id)}
+                aria-pressed={a.id === selectedId}
+                className={clsx('card-interactive relative h-full w-full p-5 text-left', a.id === selectedId && 'border-accent/60')}
+              >
+                {a.id === selectedId && (
+                  <motion.span layoutId="algo-selected" className="absolute inset-0 rounded-xl bg-accent/[0.06]"
+                    transition={{ type: 'spring', stiffness: 400, damping: 35 }} />
+                )}
+                <span className="relative flex items-start gap-4">
+                  <AlgorithmGlyph id={a.id} color={a.color} size={48} />
+                  <span className="min-w-0">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-ink">{a.name}</span>
+                      {active && <Chip>Active</Chip>}
+                    </span>
+                    <span className="mt-1 block text-xs text-ink-2">{a.summary}</span>
+                    <span className="mt-2 block text-xs text-muted tabular">p50 {a.p50.toFixed(3)} ms</span>
+                  </span>
+                </span>
+              </button>
+            )
+          })}
         </div>
-      </div>
+      </StaggerItem>
 
-      {/* Comparison Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Token Balance Comparison */}
-        <ChartCard 
-          title="Remaining Capacity Over Time"
-          description="How each algorithm handles remaining tokens/requests"
-        >
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={comparisonData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.1)" />
-              <XAxis dataKey="time" stroke="rgba(148, 163, 184, 0.5)" />
-              <YAxis stroke="rgba(148, 163, 184, 0.5)" />
-              <Tooltip 
-                contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', border: '1px solid rgba(14, 165, 233, 0.3)' }}
-                labelStyle={{ color: '#0ea5e9' }}
-              />
-              <Legend />
-              {algorithms.map((algo) => (
-                <Line key={algo.id} type="monotone" dataKey={algo.name} stroke={algo.color} dot={false} />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-        </ChartCard>
+      <StaggerItem>
+        <AlgorithmRace />
+      </StaggerItem>
 
-        {/* Measured latency */}
-        <ChartCard 
-          title="Decision Latency (measured)"
-          description="p50 / p95 / p99 per check, one atomic Redis round trip"
-        >
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={latencyComparison}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.1)" />
-              <XAxis dataKey="algorithm" stroke="rgba(148, 163, 184, 0.5)" />
-              <YAxis unit="ms" stroke="rgba(148, 163, 184, 0.5)" />
-              <Tooltip 
-                contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', border: '1px solid rgba(14, 165, 233, 0.3)' }}
-                labelStyle={{ color: '#0ea5e9' }}
-              />
-              <Legend />
-              <Bar dataKey="p50" fill="#0ea5e9" />
-              <Bar dataKey="p95" fill="#06b6d4" />
-              <Bar dataKey="p99" fill="#6366f1" />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-      </div>
+      <StaggerItem>
+        <div className="grid gap-6 lg:grid-cols-5">
+          <Card className="lg:col-span-3">
+            <AnimatePresence mode="wait">
+              <motion.div key={selected.id} initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -12 }} transition={{ duration: 0.22, ease }}>
+                <CardHeader title={selected.name} subtitle="Lua script, simplified"
+                  actions={stats?.algorithm === selected.id && <Chip>Running on this API</Chip>} />
+                <div className="space-y-5 p-5">
+                  <pre className="overflow-x-auto rounded-lg border border-white/10 bg-page p-4 font-mono text-xs leading-relaxed text-ink-2"><code>{selected.code}</code></pre>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <p className="label mb-2">Strengths</p>
+                      <ul className="space-y-1.5 text-ink-2">{selected.pros.map((p) => <li key={p} className="flex gap-2"><Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-good" aria-hidden />{p}</li>)}</ul>
+                    </div>
+                    <div>
+                      <p className="label mb-2">Trade-offs</p>
+                      <ul className="space-y-1.5 text-ink-2">{selected.cons.map((c) => <li key={c} className="flex gap-2"><Minus className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted" aria-hidden />{c}</li>)}</ul>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            </AnimatePresence>
+          </Card>
 
-      {/* Algorithm Pseudocode */}
-      <div className="card">
-        <h3 className="text-lg font-semibold mb-4 flex items-center space-x-2">
-          <BookOpen className="w-5 h-5 text-cyan-400" />
-          <span>Algorithm Logic</span>
-        </h3>
-        <pre className="bg-slate-900 rounded-lg p-4 overflow-x-auto text-sm text-cyan-400">
-          <code>{selectedAlgo.code}</code>
-        </pre>
-      </div>
-
-      {/* Key Metrics Table */}
-      <div className="card">
-        <h3 className="text-lg font-semibold mb-6">Comparison Matrix</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-700">
-                <th className="text-left py-3 px-4 font-medium text-slate-300">Metric</th>
-                {algorithms.map((algo) => (
-                  <th key={algo.id} className="text-center py-3 px-4 font-medium text-slate-300">{algo.name}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              <tr className="border-b border-slate-700">
-                <td className="py-3 px-4">Latency</td>
-                {algorithms.map((algo) => (
-                  <td key={algo.id} className="text-center py-3 px-4 font-mono text-cyan-400">{algo.latency}ms</td>
-                ))}
-              </tr>
-              <tr className="border-b border-slate-700">
-                <td className="py-3 px-4">Time Complexity</td>
-                {algorithms.map((algo) => (
-                  <td key={algo.id} className="text-center py-3 px-4 font-mono text-cyan-400">O({algo.complexity})</td>
-                ))}
-              </tr>
-              <tr className="border-b border-slate-700">
-                <td className="py-3 px-4">Memory Usage</td>
-                {algorithms.map((algo) => (
-                  <td key={algo.id} className="text-center py-3 px-4">{algo.memory}</td>
-                ))}
-              </tr>
-              <tr className="border-b border-slate-700">
-                <td className="py-3 px-4">Accuracy</td>
-                {algorithms.map((algo) => (
-                  <td key={algo.id} className="text-center py-3 px-4">{algo.accuracy}</td>
-                ))}
-              </tr>
-              <tr>
-                <td className="py-3 px-4">Best For</td>
-                {algorithms.map((algo) => (
-                  <td key={algo.id} className="text-center py-3 px-4">{algo.bestFor}</td>
-                ))}
-              </tr>
-            </tbody>
-          </table>
+          <Card className="lg:col-span-2">
+            <CardHeader title="Decision latency, p50" subtitle="One check against Redis 7 (lower is better)" />
+            <div className="h-64 px-2 pb-3 pt-2">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={ALGORITHMS} layout="vertical" margin={{ top: 4, right: 56, bottom: 0, left: 8 }}>
+                  <CartesianGrid horizontal={false} stroke={color.grid} />
+                  <XAxis type="number" tick={axisTick} tickLine={false} axisLine={{ stroke: color.axis }} domain={[0, 0.12]}
+                    tickFormatter={(v: number) => v.toFixed(2)} />
+                  <YAxis type="category" dataKey="name" tick={{ ...axisTick, fill: color.ink2 }} tickLine={false} axisLine={false} width={104} />
+                  <Tooltip cursor={{ fill: 'rgba(255,255,255,0.03)' }} content={<ChartTooltip valueFormatter={(v) => `${v.toFixed(3)} ms`} />} />
+                  <Bar dataKey="p50" name="p50" fill={color.series1} maxBarSize={20} radius={[0, 4, 4, 0]}
+                    animationDuration={900} animationEasing="ease-out">
+                    <LabelList dataKey="p50" position="right" formatter={(v: number) => v.toFixed(3)} fill={color.ink2} fontSize={11} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
         </div>
-      </div>
-    </div>
+      </StaggerItem>
+
+      <StaggerItem>
+        <Card>
+          <CardHeader title="Comparison" />
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[640px] text-left">
+              <thead>
+                <tr className="border-b border-white/10 text-xs text-muted">
+                  <th className="px-5 py-2.5 font-medium"></th>
+                  {ALGORITHMS.map((a) => <th key={a.id} className="px-3 py-2.5 font-medium">{a.name}</th>)}
+                </tr>
+              </thead>
+              <tbody className="tabular">
+                {[
+                  { label: 'p50 / p99', render: (a: typeof selected) => <span className="text-ink">{a.p50.toFixed(3)} / {a.p99.toFixed(3)} ms</span> },
+                  { label: 'State per client', render: (a: typeof selected) => <span className="text-ink-2">{a.state}</span> },
+                  { label: 'Allows bursts', render: (a: typeof selected) => <Yes v={a.bursts} /> },
+                  { label: 'Boundary spikes', render: (a: typeof selected) => <Yes v={a.boundary} /> },
+                ].map((row) => (
+                  <tr key={row.label} className="border-b border-white/5 last:border-0">
+                    <td className="px-5 py-3 text-xs text-muted">{row.label}</td>
+                    {ALGORITHMS.map((a) => <td key={a.id} className="px-3 py-3">{row.render(a)}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </StaggerItem>
+    </Stagger>
   )
 }
