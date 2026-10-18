@@ -59,7 +59,7 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - ADMIN_API_KEY=${ADMIN_API_KEY:-dev-admin-key}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - CORS_ORIGINS=http://localhost:3000
+      - CORS_ORIGINS=http://localhost:5173
     depends_on:
       redis:
         condition: service_healthy
@@ -85,7 +85,7 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - ADMIN_API_KEY=${ADMIN_API_KEY:-dev-admin-key}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - CORS_ORIGINS=http://localhost:3000
+      - CORS_ORIGINS=http://localhost:5173
     depends_on:
       redis:
         condition: service_healthy

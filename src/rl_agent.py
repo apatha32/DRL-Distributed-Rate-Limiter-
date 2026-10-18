@@ -170,6 +170,15 @@ class RLAgent:
         self._ensure_client(client_id, base_limit)
         return self._current_limits[client_id]
 
+    def peek(self, client_id: str) -> Optional[Dict]:
+        """Current limit and epsilon for a tracked client, without starting to track it."""
+        if client_id not in self._current_limits:
+            return None
+        return {
+            "limit": self._current_limits[client_id],
+            "epsilon": round(self._epsilons[client_id], 4),
+        }
+
     def set_base_limit(self, client_id: str, limit: int) -> None:
         """An operator changed this client's rule: restart learning from the new limit."""
         self._ensure_client(client_id, limit)

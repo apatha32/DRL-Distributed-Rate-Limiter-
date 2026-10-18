@@ -31,6 +31,7 @@ class CheckLimitResponse(BaseModel):
     limit: int = Field(..., description="Rate limit")
     window: int = Field(..., description="Time window in seconds")
     reset_at: float = Field(..., description="Timestamp when limit resets")
+    algorithm: str = Field(..., description="Algorithm that made this decision")
 
 
 class UpdateRuleRequest(BaseModel):
@@ -72,6 +73,7 @@ class RLDiagnosticsResponse(BaseModel):
     block_ratio: Optional[float] = None
     rps_delta: Optional[float] = None
     total_requests_window: Optional[int] = None
+    recent_decisions: Optional[List[Dict[str, Any]]] = None
 
 
 class AnalysisRecord(BaseModel):
@@ -89,3 +91,41 @@ class AnalystStatus(BaseModel):
     enabled: bool
     model: Optional[str] = None
     snapshot_preview: Optional[Dict[str, Any]] = None
+
+
+class ClientStats(BaseModel):
+    client_id: str
+    endpoint: str
+    allowed: int
+    blocked: int
+    rule_rate: int
+    rule_window: int
+    effective_limit: int
+    rl_epsilon: Optional[float] = None
+
+
+class StatsResponse(BaseModel):
+    """Live, read-only view of this node for the dashboard."""
+
+    generated_at: float
+    uptime_sec: float
+    node: str
+    algorithm: str
+    rl_enabled: bool
+    rl_update_interval_sec: int
+    fail_mode: str
+    circuit_breaker: str
+    totals: Dict[str, int]
+    latency_ms: Dict[str, Optional[float]]
+    clients: List[ClientStats]
+    clients_total: int
+
+
+class SandboxCheckRequest(BaseModel):
+    """A decision in an isolated sandbox keyspace (for comparing algorithms)."""
+
+    algorithm: str = Field(..., pattern="^(token_bucket|leaky_bucket|fixed_window|sliding_window)$")
+    session_id: str = Field(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    rate: int = Field(..., ge=1, le=1000, description="Requests per window")
+    window: int = Field(..., ge=1, le=60, description="Window size in seconds")
+    cost: int = Field(default=1, ge=1, le=100)

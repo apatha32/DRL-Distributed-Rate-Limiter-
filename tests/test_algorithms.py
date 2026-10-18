@@ -4,7 +4,6 @@ Unit tests for rate limiting algorithms.
 Uses fakeredis with Lua support so the real Redis scripts are executed.
 """
 import asyncio
-import time
 
 import fakeredis
 import pytest

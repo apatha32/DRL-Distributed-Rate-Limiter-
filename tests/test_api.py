@@ -142,3 +142,91 @@ def test_analysis_quota_is_enforced(client, monkeypatch):
     monkeypatch.setattr(main, "analyst", TrafficAnalyst(client=StubClaude()))
     codes = [client.post("/v1/admin/ai/analyses", headers=ADMIN).status_code for _ in range(3)]
     assert codes == [201, 201, 429]
+
+
+def test_stats_reports_live_totals_latency_and_clients(client, monkeypatch):
+    monkeypatch.setattr(main, "ENABLE_RL", True)
+
+    def tight_counts():
+        clients = client.get("/v1/stats").json()["clients"]
+        row = next((c for c in clients if c["client_id"] == "tight"), None)
+        return (row["allowed"], row["blocked"]) if row else (0, 0)
+
+    before = tight_counts()   # Prometheus counters are process-wide
+    for _ in range(5):
+        client.post("/v1/check", json={"client_id": "tight"})
+
+    r = client.get("/v1/stats")
+    assert r.status_code == 200
+    body = r.json()
+    (tight,) = [c for c in body["clients"] if c["client_id"] == "tight"]
+    assert (tight["allowed"] - before[0], tight["blocked"] - before[1]) == (3, 2)
+    assert tight["rule_rate"] == 3 and tight["effective_limit"] == 3
+    assert tight["rl_epsilon"] is not None
+    assert body["totals"]["allowed"] >= 3
+    assert body["latency_ms"]["samples"] >= 5 and body["latency_ms"]["p50"] > 0
+    assert body["algorithm"] == "token_bucket"
+
+
+def test_rl_diagnostics_include_recent_decisions(client, monkeypatch):
+    monkeypatch.setattr(main, "ENABLE_RL", True)
+    client.post("/v1/check", json={"client_id": "diag-client"})
+    body = client.get("/v1/rl/diagnostics/diag-client").json()
+    assert body["rl_enabled"] is True
+    assert body["recent_decisions"] == []
+
+
+def test_rl_diagnostics_for_endpoint_key(client, monkeypatch):
+    monkeypatch.setattr(main, "ENABLE_RL", True)
+    client.post("/v1/check", json={"client_id": "ep-diag", "limit_key": "login"})
+    body = client.get("/v1/rl/diagnostics/ep-diag/login").json()
+    assert body["client_id"] == "ep-diag/login"
+    assert body["current_limit"] == 100
+
+
+def test_decisions_report_the_algorithm(client):
+    r = client.post("/v1/check", json={"client_id": "algo-client"})
+    assert r.json()["algorithm"] == "token_bucket"
+    assert r.headers["X-RateLimit-Algorithm"] == "token_bucket"
+
+
+@pytest.mark.parametrize("algorithm", ["token_bucket", "leaky_bucket", "fixed_window", "sliding_window"])
+def test_sandbox_runs_any_algorithm_in_isolation(client, algorithm):
+    body = {"algorithm": algorithm, "session_id": f"sess-{algorithm}", "rate": 3, "window": 10}
+    codes = [client.post("/v1/sandbox/check", json=body).status_code for _ in range(5)]
+    assert codes == [200, 200, 200, 429, 429]
+    blocked = client.post("/v1/sandbox/check", json=body)
+    assert blocked.json()["algorithm"] == algorithm
+    assert blocked.headers["X-RateLimit-Algorithm"] == algorithm
+
+
+def test_sandbox_does_not_touch_real_clients_or_metrics(client):
+    before = client.get("/v1/stats").json()["clients_total"]
+    body = {"algorithm": "fixed_window", "session_id": "isolation-check", "rate": 1, "window": 10}
+    client.post("/v1/sandbox/check", json=body)
+    assert client.get("/v1/stats").json()["clients_total"] == before
+    # The same id as a real client is unaffected by sandbox traffic
+    assert client.post("/v1/check", json={"client_id": "tight"}).status_code == 200
+
+
+@pytest.mark.parametrize("body", [
+    {"algorithm": "nope", "session_id": "abcdefgh", "rate": 1, "window": 1},
+    {"algorithm": "fixed_window", "session_id": "short", "rate": 1, "window": 1},
+    {"algorithm": "fixed_window", "session_id": "abcdefgh", "rate": 5000, "window": 1},
+    {"algorithm": "fixed_window", "session_id": "abcdefgh", "rate": 1, "window": 3600},
+])
+def test_sandbox_validates_input(client, body):
+    assert client.post("/v1/sandbox/check", json=body).status_code == 422
+
+
+def test_sandbox_has_its_own_global_quota(client, monkeypatch):
+    monkeypatch.setattr(main, "SANDBOX_MAX_PER_MIN", 2)
+    monkeypatch.setattr(main, "_sandbox_limiters", {})
+    body = {"algorithm": "token_bucket", "session_id": "quota-check", "rate": 100, "window": 10}
+    codes = [client.post("/v1/sandbox/check", json=body).status_code for _ in range(3)]
+    assert codes == [200, 200, 429]
+
+
+def test_internal_quota_keys_are_unreachable_by_client_ids(client):
+    # "#" is reserved for internal keys and rejected in client IDs
+    assert client.post("/v1/check", json={"client_id": "#admin", "limit_key": "ai_analysis"}).status_code == 422

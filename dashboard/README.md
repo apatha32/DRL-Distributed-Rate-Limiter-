@@ -1,212 +1,38 @@
-# DRL Dashboard - Distributed Rate Limiter
+# DRL Console
 
-A professional React dashboard for monitoring and demonstrating distributed rate limiting systems. Built with TypeScript, Tailwind CSS, and Recharts.
+Live operations dashboard for the Distributed Rate Limiter. Built with React 18, TypeScript, Vite, Tailwind, TanStack Query, Framer Motion, and Recharts. It's deployed on Vercel.
 
-## 🎯 Features
+| Page | What it shows | Data |
+|---|---|---|
+| Overview | Run live demo (scripted traffic with a plain-English explanation of every step), active algorithm (animated), health, decisions/sec, allowed %, server-side decision latency, throughput, busiest clients with RL-adjusted limits | `GET /v1/stats` every 2 s, `GET /health` every 5 s |
+| Playground | Send bursts or a steady stream of real checks and watch each 200 / 429 come back, with the deciding algorithm, decisions per second, and remaining quota charts | `POST /v1/check` |
+| RL Agent | Per-client enforced limit vs rule, exploration rate, reward per window, decision log | `GET /v1/rl/diagnostics/{client}` every 4 s |
+| Algorithms | Live race (identical traffic against all four algorithms, cumulative admissions and peak-per-window), simplified Lua source, measured latency | `POST /v1/sandbox/check` |
+| AI Analyst | Run a Claude analysis and apply its recommendations | admin endpoints, `X-API-Key` |
 
-### Dashboard
-- **Real-time metrics** with live updating statistics
-- **Algorithm distribution** visualization with pie charts
-- **Performance monitoring** with latency tracking
-- **Live request trends** showing allowed vs blocked requests
-- **Client performance** table with detailed metrics
-
-### Algorithms
-- **Algorithm comparison** with detailed pros/cons
-- **Performance characteristics** visualization
-- **Latency analysis** vs request load
-- **Pseudocode examples** for each algorithm
-- **Comparison matrix** with all key metrics
-
-### Metrics
-- **Request volume** tracking over time
-- **Latency percentiles** (P50, P95, P99)
-- **Error distribution** by type
-- **Client metrics** with block rates
-- **System health** indicators
-
-### Demo
-- **Interactive simulator** with real-time events
-- **Configurable parameters** (algorithm, RPS, rate limit)
-- **Live event stream** showing requests
-- **Performance statistics** updated in real-time
-- **Algorithm-specific** behavior demonstration
-
-## 🚀 Getting Started
-
-### Prerequisites
-- Node.js 16+ 
-- npm or yarn
-
-### Installation
+## Develop
 
 ```bash
-cd dashboard
 npm install
+npm run dev        # http://localhost:5173, proxies /v1 and /health to the API on :8000
+npm test           # vitest + Testing Library
+npm run lint && npm run typecheck && npm run build
 ```
 
-### Development
+## Configure
 
-```bash
-npm run dev
-```
+| Variable | Where | Value |
+|---|---|---|
+| `VITE_API_URL` | Vercel project settings | The Railway API URL, e.g. `https://drl-production.up.railway.app` |
 
-The dashboard will be available at `http://localhost:3000`
+The API must allow this site's origin: set `CORS_ORIGINS` on the API to the Vercel URL.
 
-### Build
+The admin key is never baked into the build. You type it into the AI Analyst page, and it's kept in `sessionStorage` for that tab only.
 
-```bash
-npm run build
-```
+## Design notes
 
-Production-ready build in `dist/` directory.
-
-## 📊 Architecture
-
-```
-src/
-├── components/
-│   ├── Navbar.tsx           # Navigation & theme toggle
-│   ├── StatCard.tsx         # KPI display component
-│   └── ChartCard.tsx        # Chart wrapper component
-├── pages/
-│   ├── Dashboard.tsx        # Main dashboard
-│   ├── Algorithms.tsx       # Algorithm comparison
-│   ├── MetricsDetail.tsx    # Detailed metrics
-│   └── Demo.tsx             # Interactive simulator
-├── App.tsx                  # Main app component
-├── main.tsx                 # Entry point
-└── index.css               # Global styles with Tailwind
-```
-
-## 🎨 Design System
-
-- **Color Scheme**: Dark theme with cyan/blue accents
-- **Glass Effect**: Frosted glass cards with backdrop blur
-- **Typography**: System font stack with semantic hierarchy
-- **Spacing**: Consistent padding/margins using Tailwind scale
-- **Responsiveness**: Mobile-first design with breakpoints
-
-## 📈 Metrics Tracked
-
-### Request Metrics
-- Total requests
-- Allowed requests (success rate)
-- Blocked requests (block rate)
-- Active clients
-
-### Performance Metrics
-- P50 latency
-- P95 latency
-- P99 latency
-- Average latency
-
-### Algorithm Metrics
-- Token Bucket: 1.2ms avg latency, O(1) complexity
-- Fixed Window: 0.8ms avg latency, O(1) complexity
-- Sliding Window: 2.3ms avg latency, O(N) complexity
-
-## 🔗 Integration
-
-The dashboard is configured to proxy API requests to your backend:
-
-```
-/api/* → http://localhost:8000/v1/*
-```
-
-Update `vite.config.ts` to change the backend URL:
-
-```typescript
-proxy: {
-  '/api': {
-    target: 'http://your-backend:port',
-    changeOrigin: true,
-    rewrite: (path) => path.replace(/^\/api/, '/your-path'),
-  },
-}
-```
-
-## 🛠 Customization
-
-### Colors
-Edit `tailwind.config.js`:
-```javascript
-colors: {
-  primary: {
-    500: '#0ea5e9',  // Cyan
-    600: '#0284c7',  // Dark cyan
-    // ...
-  }
-}
-```
-
-### Data Sources
-Replace mock data in page components with real API calls:
-
-```typescript
-// Example: Dashboard.tsx
-useEffect(() => {
-  fetch('/api/metrics')
-    .then(res => res.json())
-    .then(data => setStats(data))
-}, [])
-```
-
-### Charts
-Customize Recharts components in each page component. See [Recharts documentation](https://recharts.org/).
-
-## 📦 Dependencies
-
-- **React 18** - UI library
-- **TypeScript** - Type safety
-- **Tailwind CSS** - Styling
-- **Recharts** - Chart library
-- **Lucide Icons** - Icons
-- **Vite** - Build tool
-- **Axios** - HTTP client (ready to use)
-
-## 🎓 Learning Resources
-
-### Rate Limiting Algorithms
-- **Token Bucket**: Best for burst-friendly APIs
-- **Fixed Window**: Simple baseline approach
-- **Sliding Window**: Most accurate rate limiting
-
-### Performance Tips
-1. Real-time updates use 100ms intervals
-2. Chart data limited to last 50 events
-3. Responsive design optimized for mobile
-4. Glass effect uses CSS backdrop-filter
-
-## 🐛 Troubleshooting
-
-### Backend Connection Issues
-- Ensure backend is running on `http://localhost:8000`
-- Check CORS headers from backend
-- Verify API endpoint paths in `vite.config.ts`
-
-### Chart Not Displaying
-- Verify data structure matches chart expectations
-- Check browser console for errors
-- Ensure ResponsiveContainer has defined height
-
-### Styling Issues
-- Clear browser cache: Cmd+Shift+R (Mac) or Ctrl+Shift+R (Windows)
-- Rebuild Tailwind: `npm run build`
-
-## 📝 License
-
-MIT
-
-## 🤝 Contributing
-
-Feel free to extend this dashboard with additional features:
-- More detailed metrics
-- Custom time ranges
-- Export functionality
-- Real-time alerts
-- Performance optimizations
-
-## 📞 Support
-
-For issues or questions about the DRL system, visit the [main repository](https://github.com/apatha32/DRL-Distributed-Rate-Limiter-)
+- Dark-only "ops console" theme. Color tokens are CSS variables in `src/index.css`, mapped to Tailwind roles.
+- Allowed and blocked use a two-color categorical pair, validated for color-vision deficiency on the dark surface. Status colors only ever mark state, and always come with an icon and a label.
+- Charts follow one-axis rules: 2 px lines, 10% area washes, hairline grids, a legend for two or more series, and hover tooltips.
+- Motion: blurred fade-and-rise route transitions, staggered section reveals, charts that grow in from their baseline, looping algorithm illustrations, staggered cards, spring-animated numbers, and layout animations on live tables. Everything honors the OS "reduce motion" setting.
+- Each page is lazy-loaded, and vendor code is split into separate chunks.
