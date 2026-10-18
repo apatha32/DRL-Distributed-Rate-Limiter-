@@ -230,3 +230,15 @@ def test_sandbox_has_its_own_global_quota(client, monkeypatch):
 def test_internal_quota_keys_are_unreachable_by_client_ids(client):
     # "#" is reserved for internal keys and rejected in client IDs
     assert client.post("/v1/check", json={"client_id": "#admin", "limit_key": "ai_analysis"}).status_code == 422
+
+
+def test_sandbox_reports_503_when_redis_is_down(client, monkeypatch):
+    class Down:
+        async def check_limit(self, *a, **k):
+            raise ConnectionError("redis down")
+
+    monkeypatch.setattr(main, "_sandbox_limiters", {"_quota": Down()})
+    body = {"algorithm": "fixed_window", "session_id": "redis-down-1", "rate": 5, "window": 5}
+    r = client.post("/v1/sandbox/check", json=body)
+    assert r.status_code == 503
+    assert "Redis" in r.json()["detail"]

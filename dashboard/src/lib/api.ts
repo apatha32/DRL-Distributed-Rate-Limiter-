@@ -1,17 +1,14 @@
 import axios from 'axios'
 
-// Production: VITE_API_URL points at the Railway API. Dev: empty, and Vite proxies to :8000.
+// Default: same-origin calls. In dev Vite proxies /v1 and /health to :8000; on Vercel,
+// dashboard/vercel.json rewrites them to the Railway API. VITE_API_URL overrides both.
 export const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
-
-/** A production build with no API URL calls its own host, which only serves the dashboard. */
-export const API_MISCONFIGURED = import.meta.env.PROD && !API_BASE
 
 export class ApiNotConnectedError extends Error {
   constructor() {
     super(
-      API_MISCONFIGURED
-        ? 'The dashboard is not connected to the API. Set VITE_API_URL in Vercel to your Railway URL, then redeploy.'
-        : `${API_BASE || window.location.origin} answered with a web page instead of API data. Check that VITE_API_URL points at the API.`,
+      `${API_BASE || window.location.origin} answered with a web page instead of API data. ` +
+        'Check the /v1 and /health rewrites in dashboard/vercel.json, or set VITE_API_URL to the API and redeploy.',
     )
     this.name = 'ApiNotConnectedError'
   }

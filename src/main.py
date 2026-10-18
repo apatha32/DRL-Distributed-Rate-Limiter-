@@ -349,6 +349,21 @@ async def sandbox_check(request: SandboxCheckRequest):
     Never touches real clients, rules, metrics, or the RL agent, so it can't be used to
     get extra quota. Sandbox traffic as a whole is itself rate limited.
     """
+    try:
+        return await _sandbox_decide(request)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # The sandbox only exists to show real Redis decisions, so it never fails open
+        logger.error(f"Sandbox check failed: {e}")
+        record_redis_error("sandbox")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Sandbox unavailable: the limiter cannot reach Redis",
+        )
+
+
+async def _sandbox_decide(request: SandboxCheckRequest):
     redis_client = await get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
     if "_quota" not in _sandbox_limiters:
         _sandbox_limiters["_quota"] = TokenBucketLimiter(redis_client)
