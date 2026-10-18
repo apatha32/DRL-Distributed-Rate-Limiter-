@@ -1,23 +1,168 @@
 """
 Rate limiting algorithms implementations.
+
+Every algorithm runs as a single Redis Lua script, so the read-decide-write
+cycle for a client is atomic: concurrent requests hitting different limiter
+nodes are serialized by Redis and can never both spend the same budget.
+Scripts read the clock with Redis TIME rather than each node's local clock,
+so clock skew between nodes does not affect decisions. Each check is one
+network round trip (EVALSHA) on an asyncio Redis client.
+
+All scripts return {allowed (0/1), remaining, retry_after_ms}.
 """
 import logging
-import time
+import uuid
 from abc import ABC, abstractmethod
-from typing import Tuple, Dict, Any
-from redis import Redis
+from typing import Tuple
+from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
 
 
+# Shared prelude: current Redis server time in milliseconds.
+_NOW_MS = """
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+"""
+
+TOKEN_BUCKET_LUA = _NOW_MS + """
+local capacity  = tonumber(ARGV[1])
+local window_ms = tonumber(ARGV[2])
+local cost      = tonumber(ARGV[3])
+local refill_per_ms = capacity / window_ms
+
+local state  = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(state[1])
+local ts     = tonumber(state[2])
+if tokens == nil then
+  tokens = capacity
+  ts = now
+end
+
+-- Refill for elapsed time, capped at capacity (also handles a lowered limit)
+tokens = math.min(capacity, tokens + math.max(0, now - ts) * refill_per_ms)
+
+local allowed, retry = 0, 0
+if tokens >= cost then
+  tokens = tokens - cost
+  allowed = 1
+else
+  retry = math.ceil((cost - tokens) / refill_per_ms)
+end
+
+redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
+redis.call('PEXPIRE', KEYS[1], window_ms * 2)
+return {allowed, math.floor(tokens), retry}
+"""
+
+LEAKY_BUCKET_LUA = _NOW_MS + """
+local capacity  = tonumber(ARGV[1])
+local window_ms = tonumber(ARGV[2])
+local cost      = tonumber(ARGV[3])
+local leak_per_ms = capacity / window_ms
+
+local state = redis.call('HMGET', KEYS[1], 'level', 'ts')
+local level = tonumber(state[1]) or 0
+local ts    = tonumber(state[2]) or now
+
+-- Drain the bucket at a constant rate for the elapsed time
+level = math.max(0, level - math.max(0, now - ts) * leak_per_ms)
+
+local allowed, retry = 0, 0
+if level + cost <= capacity then
+  level = level + cost
+  allowed = 1
+else
+  retry = math.ceil((level + cost - capacity) / leak_per_ms)
+end
+
+redis.call('HSET', KEYS[1], 'level', level, 'ts', now)
+redis.call('PEXPIRE', KEYS[1], window_ms * 2)
+return {allowed, math.floor(capacity - level), retry}
+"""
+
+FIXED_WINDOW_LUA = _NOW_MS + """
+local rate      = tonumber(ARGV[1])
+local window_ms = tonumber(ARGV[2])
+local cost      = tonumber(ARGV[3])
+local win_start = now - (now % window_ms)
+
+local state = redis.call('HMGET', KEYS[1], 'start', 'count')
+local count = 0
+if tonumber(state[1]) == win_start then
+  count = tonumber(state[2])
+end
+
+local allowed, retry = 0, 0
+if count + cost <= rate then
+  count = count + cost
+  allowed = 1
+  redis.call('HSET', KEYS[1], 'start', win_start, 'count', count)
+  redis.call('PEXPIRE', KEYS[1], window_ms)
+else
+  retry = win_start + window_ms - now
+end
+return {allowed, rate - count, retry}
+"""
+
+SLIDING_WINDOW_LUA = _NOW_MS + """
+local rate      = tonumber(ARGV[1])
+local window_ms = tonumber(ARGV[2])
+local cost      = tonumber(ARGV[3])
+local nonce     = ARGV[4]
+
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window_ms)
+local count = redis.call('ZCARD', KEYS[1])
+
+local allowed, retry = 0, 0
+if count + cost <= rate then
+  for i = 1, cost do
+    redis.call('ZADD', KEYS[1], now, nonce .. ':' .. i)
+  end
+  count = count + cost
+  allowed = 1
+  redis.call('PEXPIRE', KEYS[1], window_ms)
+elseif cost > rate then
+  retry = window_ms
+else
+  -- Wait until enough of the oldest entries slide out of the window
+  local idx = count + cost - rate - 1
+  local entry = redis.call('ZRANGE', KEYS[1], idx, idx, 'WITHSCORES')
+  retry = math.max(0, tonumber(entry[2]) + window_ms - now)
+end
+return {allowed, rate - count, retry}
+"""
+
+
 class RateLimitAlgorithmBase(ABC):
     """Base class for rate limiting algorithms."""
-    
+
+    LUA: str = ""
+    KEY_PREFIX: str = ""
+
     def __init__(self, redis_client: Redis):
         self.redis = redis_client
-    
+        # register_script hashes locally and invokes via EVALSHA, loading the
+        # script into Redis on first use (or after a Redis restart).
+        self._script = redis_client.register_script(self.LUA)
+
+    def _key(self, client_id: str, limit_key: str) -> str:
+        return f"ratelimit:{self.KEY_PREFIX}:{client_id}:{limit_key}"
+
+    async def _run(self, key: str, *args) -> Tuple[bool, int, int]:
+        try:
+            allowed, remaining, retry_after_ms = await self._script(keys=[key], args=list(args))
+        except Exception as e:
+            logger.error(f"Error in {self.KEY_PREFIX} check: {e}")
+            raise
+        return bool(allowed), max(0, int(remaining)), int(retry_after_ms)
+
+    def effective_limit(self, client_id: str, limit_key: str, rate: int) -> int:
+        """The limit that check_limit will enforce for this client (static here)."""
+        return rate
+
     @abstractmethod
-    def check_limit(
+    async def check_limit(
         self,
         client_id: str,
         limit_key: str,
@@ -27,7 +172,7 @@ class RateLimitAlgorithmBase(ABC):
     ) -> Tuple[bool, int, int]:
         """
         Check if request should be allowed.
-        
+
         Returns:
             (allowed, remaining, retry_after_ms)
         """
@@ -35,188 +180,59 @@ class RateLimitAlgorithmBase(ABC):
 
 
 class TokenBucketLimiter(RateLimitAlgorithmBase):
-    """Token bucket rate limiting algorithm."""
-    
-    def check_limit(
-        self,
-        client_id: str,
-        limit_key: str,
-        rate: int,
-        window: int,
-        cost: int = 1,
-    ) -> Tuple[bool, int, int]:
-        """
-        Token bucket algorithm:
-        - Each client has a bucket with max 'rate' tokens
-        - Tokens refill continuously based on time elapsed
-        - Each request consumes 'cost' tokens
-        """
-        bucket_key = f"ratelimit:token_bucket:{client_id}:{limit_key}"
-        last_refill_key = f"ratelimit:token_bucket:{client_id}:{limit_key}:last_refill"
-        
-        try:
-            now = time.time()
-            pipe = self.redis.pipeline()
-            
-            # Get current state
-            current_tokens = self.redis.get(bucket_key)
-            last_refill = self.redis.get(last_refill_key)
-            
-            if current_tokens is None:
-                # First request from this client
-                current_tokens = float(rate)
-                last_refill = now
-            else:
-                current_tokens = float(current_tokens)
-                last_refill = float(last_refill)
-                
-                # Calculate tokens to add based on time elapsed
-                time_elapsed = now - last_refill
-                refill_rate = rate / window  # tokens per second
-                tokens_to_add = time_elapsed * refill_rate
-                current_tokens = min(current_tokens + tokens_to_add, float(rate))
-            
-            # Check if we have enough tokens
-            if current_tokens >= cost:
-                # Consume tokens
-                remaining = int(current_tokens - cost)
-                retry_after_ms = 0
-                allowed = True
-            else:
-                # Not enough tokens
-                remaining = int(current_tokens)
-                # Calculate how long until next token
-                tokens_needed = cost - current_tokens
-                retry_after_ms = int((tokens_needed / (rate / window)) * 1000)
-                allowed = False
-            
-            # Update Redis atomically
-            pipe.set(bucket_key, remaining, ex=window * 2)
-            pipe.set(last_refill_key, now, ex=window * 2)
-            pipe.execute()
-            
-            return allowed, remaining, retry_after_ms
-            
-        except Exception as e:
-            logger.error(f"Error in token bucket check: {e}")
-            raise
+    """
+    Token bucket: a bucket of `rate` tokens refills continuously at
+    rate/window tokens per second; each request spends `cost` tokens.
+    Allows bursts up to the bucket size.
+    """
+
+    LUA = TOKEN_BUCKET_LUA
+    KEY_PREFIX = "token_bucket"
+
+    async def check_limit(self, client_id, limit_key, rate, window, cost=1):
+        return await self._run(self._key(client_id, limit_key), rate, window * 1000, cost)
+
+
+class LeakyBucketLimiter(RateLimitAlgorithmBase):
+    """
+    Leaky bucket (as a meter): each request adds `cost` units of water to a
+    bucket of size `rate` that drains at a constant rate/window per second.
+    Requests that would overflow the bucket are rejected, enforcing a smooth
+    outflow rate.
+    """
+
+    LUA = LEAKY_BUCKET_LUA
+    KEY_PREFIX = "leaky_bucket"
+
+    async def check_limit(self, client_id, limit_key, rate, window, cost=1):
+        return await self._run(self._key(client_id, limit_key), rate, window * 1000, cost)
 
 
 class FixedWindowLimiter(RateLimitAlgorithmBase):
-    """Fixed window rate limiting algorithm."""
-    
-    def check_limit(
-        self,
-        client_id: str,
-        limit_key: str,
-        rate: int,
-        window: int,
-        cost: int = 1,
-    ) -> Tuple[bool, int, int]:
-        """
-        Fixed window algorithm:
-        - Count requests in fixed time windows
-        - Reset counter at window boundary
-        - Prone to boundary spike problem (mentioned in docs)
-        """
-        now = time.time()
-        window_start = int(now / window) * window
-        window_key = f"ratelimit:fixed_window:{client_id}:{limit_key}:{window_start}"
-        
-        try:
-            pipe = self.redis.pipeline()
-            
-            # Increment counter
-            pipe.incr(window_key)
-            # Set expiration (window duration)
-            pipe.expire(window_key, window + 1)
-            results = pipe.execute()
-            
-            current_count = results[0]
-            remaining = max(0, rate - current_count)
-            
-            if current_count <= rate:
-                allowed = True
-                retry_after_ms = 0
-            else:
-                allowed = False
-                # Approximate retry time until next window
-                time_until_next_window = window - (now % window)
-                retry_after_ms = int(time_until_next_window * 1000)
-            
-            return allowed, remaining, retry_after_ms
-            
-        except Exception as e:
-            logger.error(f"Error in fixed window check: {e}")
-            raise
+    """
+    Fixed window: counts request cost in aligned windows of `window` seconds
+    and resets at each boundary. Cheapest, but allows up to 2x `rate` across
+    a window boundary.
+    """
+
+    LUA = FIXED_WINDOW_LUA
+    KEY_PREFIX = "fixed_window"
+
+    async def check_limit(self, client_id, limit_key, rate, window, cost=1):
+        return await self._run(self._key(client_id, limit_key), rate, window * 1000, cost)
 
 
 class SlidingWindowLimiter(RateLimitAlgorithmBase):
     """
-    Sliding window rate limiting algorithm.
-    
-    Combines accuracy of sliding window with simplicity of fixed window.
-    Uses a sorted set in Redis to track request timestamps within the window.
+    Sliding window log: keeps a sorted set of request timestamps and counts
+    those within the last `window` seconds. Exact, with no boundary spikes.
+    Only allowed requests are logged, so rejected traffic does not consume budget.
     """
-    
-    def check_limit(
-        self,
-        client_id: str,
-        limit_key: str,
-        rate: int,
-        window: int,
-        cost: int = 1,
-    ) -> Tuple[bool, int, int]:
-        """
-        Sliding window algorithm:
-        - Tracks exact timestamps of requests in Redis sorted set
-        - Removes old timestamps outside the window
-        - Counts requests in the sliding window
-        - More accurate than fixed window, prevents boundary spikes
-        """
-        now = time.time()
-        window_start = now - window
-        sorted_set_key = f"ratelimit:sliding_window:{client_id}:{limit_key}"
-        
-        try:
-            pipe = self.redis.pipeline()
-            
-            # Remove old timestamps outside window (older than window_start)
-            pipe.zremrangebyscore(sorted_set_key, "-inf", window_start)
-            
-            # Count current requests in window
-            pipe.zcount(sorted_set_key, window_start, now)
-            
-            # Add current request timestamp (can have duplicates for same millisecond)
-            for _ in range(cost):
-                pipe.zadd(sorted_set_key, {f"{now}:{time.time_ns()}": now})
-            
-            # Set expiration to window + 1 second
-            pipe.expire(sorted_set_key, window + 1)
-            
-            results = pipe.execute()
-            
-            # results: [removed_count, current_count, add_result1, add_result2, ..., expire_result]
-            current_count = results[1]
-            
-            remaining = max(0, rate - current_count - cost)
-            
-            if current_count + cost <= rate:
-                allowed = True
-                retry_after_ms = 0
-            else:
-                allowed = False
-                # Get oldest request in window to calculate retry time
-                oldest_request = self.redis.zrange(sorted_set_key, 0, 0, withscores=True)
-                if oldest_request:
-                    oldest_timestamp = oldest_request[0][1]
-                    retry_after = (oldest_timestamp + window) - now
-                    retry_after_ms = max(0, int(retry_after * 1000))
-                else:
-                    retry_after_ms = int((window / rate) * 1000)
-            
-            return allowed, remaining, retry_after_ms
-            
-        except Exception as e:
-            logger.error(f"Error in sliding window check: {e}")
-            raise
+
+    LUA = SLIDING_WINDOW_LUA
+    KEY_PREFIX = "sliding_window"
+
+    async def check_limit(self, client_id, limit_key, rate, window, cost=1):
+        return await self._run(
+            self._key(client_id, limit_key), rate, window * 1000, cost, uuid.uuid4().hex
+        )

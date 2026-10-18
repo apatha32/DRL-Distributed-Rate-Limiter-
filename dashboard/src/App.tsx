@@ -5,8 +5,9 @@ import Algorithms from './pages/Algorithms'
 import MetricsDetail from './pages/MetricsDetail'
 import Demo from './pages/Demo'
 import AIAgent from './pages/AIAgent'
+import AIAnalyst from './pages/AIAnalyst'
 
-type Page = 'dashboard' | 'algorithms' | 'metrics' | 'demo' | 'ai'
+export type Page = 'dashboard' | 'algorithms' | 'metrics' | 'demo' | 'ai' | 'analyst'
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard')
@@ -23,6 +24,7 @@ function App() {
           {currentPage === 'metrics' && <MetricsDetail />}
           {currentPage === 'demo' && <Demo />}
           {currentPage === 'ai' && <AIAgent />}
+          {currentPage === 'analyst' && <AIAnalyst />}
         </main>
 
         {/* Footer */}

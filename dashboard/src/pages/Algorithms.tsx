@@ -1,56 +1,117 @@
 import React, { useState } from 'react'
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ScatterChart, Scatter } from 'recharts'
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import { BookOpen, Zap, Clock } from 'lucide-react'
 import ChartCard from '../components/ChartCard'
 
+// Latencies measured with scripts/benchmark.py (async client, 20K checks/algorithm, Redis 7, same Docker network)
 const algorithms = [
   {
     id: 'token-bucket',
     name: 'Token Bucket',
-    description: 'Each client has a bucket that fills at a constant rate. Requests consume tokens; if insufficient tokens exist, the request is denied.',
-    pros: ['Allows bursts', 'Smooth refill', 'Flexible capacity'],
-    cons: ['Requires bucket storage', 'Token generation overhead'],
-    latency: 1.2,
-    complexity: 'O(1)',
+    description: 'Each client has a bucket that refills continuously at rate/window tokens per second. Requests spend tokens; if too few remain, the request is denied.',
+    pros: ['Allows bursts', 'Smooth refill', 'O(1) state per client'],
+    cons: ['Bursts can briefly exceed average rate', 'Two parameters to reason about'],
+    latency: 0.098,
+    complexity: '1',
+    memory: 'Low',
+    accuracy: 'High',
+    bestFor: 'Bursty APIs',
     color: '#0ea5e9',
+    code: `-- one atomic Lua script (EVALSHA)
+local tokens, ts = HMGET(key, 'tokens', 'ts')
+tokens = min(capacity, tokens + (now - ts) * refill_per_ms)
+if tokens >= cost then
+  tokens = tokens - cost; allowed = 1
+else
+  retry_ms = ceil((cost - tokens) / refill_per_ms)
+end
+HSET(key, 'tokens', tokens, 'ts', now)`,
+  },
+  {
+    id: 'leaky-bucket',
+    name: 'Leaky Bucket',
+    description: 'Each request pours water into a bucket that drains at a constant rate. Requests that would overflow the bucket are rejected, enforcing a smooth outflow.',
+    pros: ['Smooth, constant output rate', 'O(1) state per client', 'Bounded bursts'],
+    cons: ['Less tolerant of legitimate spikes', 'Full bucket recovers slowly'],
+    latency: 0.097,
+    complexity: '1',
+    memory: 'Low',
+    accuracy: 'High',
+    bestFor: 'Protecting fragile backends',
+    color: '#6366f1',
+    code: `-- one atomic Lua script (EVALSHA)
+local level, ts = HMGET(key, 'level', 'ts')
+level = max(0, level - (now - ts) * leak_per_ms)
+if level + cost <= capacity then
+  level = level + cost; allowed = 1
+else
+  retry_ms = ceil((level + cost - capacity) / leak_per_ms)
+end
+HSET(key, 'level', level, 'ts', now)`,
   },
   {
     id: 'fixed-window',
     name: 'Fixed Window',
-    description: 'Divides time into fixed intervals (windows). Each window has a request limit counter. When a request arrives, check if the counter is below the limit.',
-    pros: ['Simplest implementation', 'Fast O(1) operations', 'Low memory'],
-    cons: ['Boundary spike issue', 'Less accurate', 'Can burst at boundaries'],
-    latency: 0.8,
-    complexity: 'O(1)',
+    description: 'Divides time into aligned windows with one counter each. A request is allowed while the counter plus its cost stays within the limit.',
+    pros: ['Simplest implementation', 'O(1) operations', 'Lowest memory'],
+    cons: ['Boundary spike issue', 'Up to 2x rate across a boundary'],
+    latency: 0.096,
+    complexity: '1',
+    memory: 'Low',
+    accuracy: 'Medium',
+    bestFor: 'Simple quotas',
     color: '#06b6d4',
+    code: `-- one atomic Lua script (EVALSHA)
+local win_start = now - (now % window_ms)
+local start, count = HMGET(key, 'start', 'count')
+if start ~= win_start then count = 0 end
+if count + cost <= rate then
+  HSET(key, 'start', win_start, 'count', count + cost)
+  allowed = 1
+else
+  retry_ms = win_start + window_ms - now
+end`,
   },
   {
     id: 'sliding-window',
     name: 'Sliding Window',
-    description: 'Maintains a window of requests with timestamps. For each request, counts how many requests fall within the sliding window and compares against the limit.',
-    pros: ['Accurate rate limiting', 'No boundary spikes', 'Smooth behavior'],
-    cons: ['Higher memory usage', 'More complex logic', 'Slower than fixed window'],
-    latency: 2.3,
-    complexity: 'O(N)',
+    description: 'Keeps a sorted-set log of request timestamps and counts those inside a true rolling window before admitting a request.',
+    pros: ['Exact rate limiting', 'No boundary spikes', 'Blocked requests cost nothing'],
+    cons: ['Memory grows with request rate', 'O(log N) per operation'],
+    latency: 0.101,
+    complexity: 'log N',
+    memory: 'High',
+    accuracy: 'Very High',
+    bestFor: 'Strict enforcement',
     color: '#0891b2',
+    code: `-- one atomic Lua script (EVALSHA)
+ZREMRANGEBYSCORE(key, '-inf', now - window_ms)
+local count = ZCARD(key)
+if count + cost <= rate then
+  ZADD(key, now, nonce)   -- once per unit of cost
+  allowed = 1
+else
+  retry_ms = oldest_needed + window_ms - now
+end`,
   },
 ]
 
+// Illustrative behaviour under the same bursty traffic pattern
 const comparisonData = [
-  { time: '0s', 'Token Bucket': 1000, 'Fixed Window': 1000, 'Sliding Window': 1000 },
-  { time: '5s', 'Token Bucket': 950, 'Fixed Window': 800, 'Sliding Window': 920 },
-  { time: '10s', 'Token Bucket': 1050, 'Fixed Window': 1000, 'Sliding Window': 980 },
-  { time: '15s', 'Token Bucket': 1100, 'Fixed Window': 800, 'Sliding Window': 1050 },
-  { time: '20s', 'Token Bucket': 1000, 'Fixed Window': 1000, 'Sliding Window': 1000 },
-  { time: '25s', 'Fixed Window': 800, 'Token Bucket': 950, 'Sliding Window': 920 },
+  { time: '0s', 'Token Bucket': 1000, 'Leaky Bucket': 1000, 'Fixed Window': 1000, 'Sliding Window': 1000 },
+  { time: '5s', 'Token Bucket': 950, 'Leaky Bucket': 900, 'Fixed Window': 800, 'Sliding Window': 920 },
+  { time: '10s', 'Token Bucket': 1050, 'Leaky Bucket': 940, 'Fixed Window': 1000, 'Sliding Window': 980 },
+  { time: '15s', 'Token Bucket': 1100, 'Leaky Bucket': 960, 'Fixed Window': 800, 'Sliding Window': 1050 },
+  { time: '20s', 'Token Bucket': 1000, 'Leaky Bucket': 980, 'Fixed Window': 1000, 'Sliding Window': 1000 },
+  { time: '25s', 'Token Bucket': 950, 'Leaky Bucket': 960, 'Fixed Window': 800, 'Sliding Window': 920 },
 ]
 
+// Measured per-decision latency (ms)
 const latencyComparison = [
-  { requests: 100, 'Token Bucket': 0.9, 'Fixed Window': 0.7, 'Sliding Window': 1.5 },
-  { requests: 500, 'Token Bucket': 1.1, 'Fixed Window': 0.8, 'Sliding Window': 1.8 },
-  { requests: 1000, 'Token Bucket': 1.2, 'Fixed Window': 0.8, 'Sliding Window': 2.0 },
-  { requests: 5000, 'Token Bucket': 1.3, 'Fixed Window': 0.9, 'Sliding Window': 2.2 },
-  { requests: 10000, 'Token Bucket': 1.4, 'Fixed Window': 0.9, 'Sliding Window': 2.5 },
+  { algorithm: 'Token Bucket', p50: 0.098, p95: 0.142, p99: 0.286 },
+  { algorithm: 'Leaky Bucket', p50: 0.097, p95: 0.111, p99: 0.131 },
+  { algorithm: 'Fixed Window', p50: 0.096, p95: 0.11, p99: 0.13 },
+  { algorithm: 'Sliding Window', p50: 0.101, p95: 0.118, p99: 0.171 },
 ]
 
 export default function Algorithms() {
@@ -65,7 +126,7 @@ export default function Algorithms() {
       </div>
 
       {/* Algorithm Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
         {algorithms.map((algo) => (
           <div
             key={algo.id}
@@ -97,7 +158,7 @@ export default function Algorithms() {
           </div>
           <div className="text-right">
             <div className="text-3xl font-bold text-cyan-400">{selectedAlgo.latency}ms</div>
-            <div className="text-sm text-slate-400">Average Latency</div>
+            <div className="text-sm text-slate-400">p50 latency (measured)</div>
           </div>
         </div>
 
@@ -150,31 +211,32 @@ export default function Algorithms() {
                 labelStyle={{ color: '#0ea5e9' }}
               />
               <Legend />
-              <Line type="monotone" dataKey="Token Bucket" stroke="#0ea5e9" dot={false} />
-              <Line type="monotone" dataKey="Fixed Window" stroke="#06b6d4" dot={false} />
-              <Line type="monotone" dataKey="Sliding Window" stroke="#0891b2" dot={false} />
+              {algorithms.map((algo) => (
+                <Line key={algo.id} type="monotone" dataKey={algo.name} stroke={algo.color} dot={false} />
+              ))}
             </LineChart>
           </ResponsiveContainer>
         </ChartCard>
 
-        {/* Latency vs Load */}
+        {/* Measured latency */}
         <ChartCard 
-          title="Latency vs Request Load"
-          description="Performance degradation with increasing request volume"
+          title="Decision Latency (measured)"
+          description="p50 / p95 / p99 per check, one atomic Redis round trip"
         >
           <ResponsiveContainer width="100%" height="100%">
-            <ScatterChart>
+            <BarChart data={latencyComparison}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.1)" />
-              <XAxis dataKey="requests" name="Requests/sec" stroke="rgba(148, 163, 184, 0.5)" />
-              <YAxis dataKey="data" name="Latency (ms)" stroke="rgba(148, 163, 184, 0.5)" />
+              <XAxis dataKey="algorithm" stroke="rgba(148, 163, 184, 0.5)" />
+              <YAxis unit="ms" stroke="rgba(148, 163, 184, 0.5)" />
               <Tooltip 
                 contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', border: '1px solid rgba(14, 165, 233, 0.3)' }}
                 labelStyle={{ color: '#0ea5e9' }}
               />
-              <Scatter name="Token Bucket" data={latencyComparison} dataKey="Token Bucket" fill="#0ea5e9" />
-              <Scatter name="Fixed Window" data={latencyComparison} dataKey="Fixed Window" fill="#06b6d4" />
-              <Scatter name="Sliding Window" data={latencyComparison} dataKey="Sliding Window" fill="#0891b2" />
-            </ScatterChart>
+              <Legend />
+              <Bar dataKey="p50" fill="#0ea5e9" />
+              <Bar dataKey="p95" fill="#06b6d4" />
+              <Bar dataKey="p99" fill="#6366f1" />
+            </BarChart>
           </ResponsiveContainer>
         </ChartCard>
       </div>
@@ -186,42 +248,7 @@ export default function Algorithms() {
           <span>Algorithm Logic</span>
         </h3>
         <pre className="bg-slate-900 rounded-lg p-4 overflow-x-auto text-sm text-cyan-400">
-          <code>{`${selectedAlgo.name === 'Token Bucket' 
-            ? `def check_limit(client_id, rate, window, cost=1):
-    key = f"bucket:{client_id}"
-    current = redis.get(key) or rate
-    
-    if current >= cost:
-        redis.decrby(key, cost)
-        return True, current - cost
-    
-    return False, 0` 
-            : selectedAlgo.name === 'Fixed Window'
-            ? `def check_limit(client_id, rate, window):
-    key = f"window:{client_id}:{current_window()}"
-    count = redis.get(key) or 0
-    
-    if count < rate:
-        redis.incr(key)
-        redis.expire(key, window)
-        return True
-    
-    return False`
-            : `def check_limit(client_id, rate, window):
-    key = f"sliding:{client_id}"
-    now = time.time()
-    
-    # Remove old requests outside window
-    redis.zremrangebyscore(key, 0, now - window)
-    
-    # Count requests in window
-    count = redis.zcard(key)
-    
-    if count < rate:
-        redis.zadd(key, {now: now})
-        return True
-    
-    return False`}`}</code>
+          <code>{selectedAlgo.code}</code>
         </pre>
       </div>
 
@@ -253,21 +280,21 @@ export default function Algorithms() {
               </tr>
               <tr className="border-b border-slate-700">
                 <td className="py-3 px-4">Memory Usage</td>
-                <td className="text-center py-3 px-4">Medium</td>
-                <td className="text-center py-3 px-4">Low</td>
-                <td className="text-center py-3 px-4">High</td>
+                {algorithms.map((algo) => (
+                  <td key={algo.id} className="text-center py-3 px-4">{algo.memory}</td>
+                ))}
               </tr>
               <tr className="border-b border-slate-700">
                 <td className="py-3 px-4">Accuracy</td>
-                <td className="text-center py-3 px-4">High</td>
-                <td className="text-center py-3 px-4">Medium</td>
-                <td className="text-center py-3 px-4">Very High</td>
+                {algorithms.map((algo) => (
+                  <td key={algo.id} className="text-center py-3 px-4">{algo.accuracy}</td>
+                ))}
               </tr>
               <tr>
                 <td className="py-3 px-4">Best For</td>
-                <td className="text-center py-3 px-4">Bursting APIs</td>
-                <td className="text-center py-3 px-4">Simple limits</td>
-                <td className="text-center py-3 px-4">Accurate rate limiting</td>
+                {algorithms.map((algo) => (
+                  <td key={algo.id} className="text-center py-3 px-4">{algo.bestFor}</td>
+                ))}
               </tr>
             </tbody>
           </table>

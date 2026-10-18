@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   redis:
     image: redis:7-alpine
@@ -36,8 +34,9 @@ services:
     container_name: drl-jaeger
     environment:
       COLLECTOR_ZIPKIN_HOST_PORT: :9411
+      COLLECTOR_OTLP_ENABLED: "true"
     ports:
-      - "6831:6831/udp"  # Jaeger agent
+      - "4317:4317"      # OTLP gRPC
       - "16686:16686"    # Jaeger UI
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:14269/status"]
@@ -56,9 +55,11 @@ services:
       - DATABASE_URL=postgresql://ratelimiter:ratelimiter@postgres:5432/ratelimiter
       - SERVICE_NAME=limiter-1
       - FAIL_MODE=open
-      - JAEGER_ENABLED=true
-      - JAEGER_HOST=jaeger
-      - JAEGER_PORT=6831
+      - ENABLE_RL=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-dev-admin-key}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CORS_ORIGINS=http://localhost:3000
     depends_on:
       redis:
         condition: service_healthy
@@ -80,9 +81,11 @@ services:
       - DATABASE_URL=postgresql://ratelimiter:ratelimiter@postgres:5432/ratelimiter
       - SERVICE_NAME=limiter-2
       - FAIL_MODE=open
-      - JAEGER_ENABLED=true
-      - JAEGER_HOST=jaeger
-      - JAEGER_PORT=6831
+      - ENABLE_RL=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-dev-admin-key}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CORS_ORIGINS=http://localhost:3000
     depends_on:
       redis:
         condition: service_healthy

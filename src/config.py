@@ -9,6 +9,7 @@ class RateLimitAlgorithm(Enum):
     TOKEN_BUCKET = "token_bucket"
     FIXED_WINDOW = "fixed_window"
     SLIDING_WINDOW = "sliding_window"
+    LEAKY_BUCKET = "leaky_bucket"
 
 
 class FailMode(Enum):
@@ -59,3 +60,17 @@ RL_EPSILON_MIN = float(os.getenv("RL_EPSILON_MIN", "0.05"))
 RL_EPSILON_DECAY = float(os.getenv("RL_EPSILON_DECAY", "0.995"))
 RL_LIMIT_STEP_PCT = float(os.getenv("RL_LIMIT_STEP_PCT", "0.10"))
 RL_UPDATE_INTERVAL_SEC = int(os.getenv("RL_UPDATE_INTERVAL_SEC", "10"))
+
+# Security
+# Admin endpoints (/v1/admin/*) require this key in the X-API-Key header.
+# If unset, admin endpoints are disabled (fail closed).
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
+# Comma-separated browser origins allowed to call the API (e.g. the Vercel dashboard)
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+
+# AI traffic analyst (Claude). Enabled when ANTHROPIC_API_KEY is set.
+ANALYST_MODEL = os.getenv("ANALYST_MODEL", "claude-opus-5-5")
+ANALYST_EFFORT = os.getenv("ANALYST_EFFORT", "medium")
+ANALYST_MAX_PER_HOUR = int(os.getenv("ANALYST_MAX_PER_HOUR", "20"))  # cost guardrail
+ANALYST_MAX_CLIENTS = int(os.getenv("ANALYST_MAX_CLIENTS", "50"))    # busiest clients sent to Claude
+ANALYSIS_TTL_SEC = int(os.getenv("ANALYSIS_TTL_SEC", "86400"))

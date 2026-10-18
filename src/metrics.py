@@ -34,7 +34,7 @@ redis_errors = Counter(
 check_latency = Histogram(
     'ratelimiter_check_duration_seconds',
     'Rate limit check duration',
-    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
+    buckets=(0.0001, 0.00025, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.5),
     registry=registry,
 )
 
@@ -63,3 +63,33 @@ def record_redis_error(operation: str):
 def get_registry():
     """Get Prometheus registry."""
     return registry
+
+
+analyst_runs = Counter(
+    'ratelimiter_ai_analyses_total',
+    'AI traffic analyses by outcome',
+    ['outcome'],
+    registry=registry,
+)
+
+analyst_tokens = Counter(
+    'ratelimiter_ai_tokens_total',
+    'Claude tokens used by the AI traffic analyst',
+    ['direction'],
+    registry=registry,
+)
+
+
+def client_totals() -> dict:
+    """Lifetime allowed/blocked counts per (client_id, endpoint) on this node."""
+    totals: dict = {}
+    for family in registry.collect():
+        if family.name not in ("ratelimiter_allowed", "ratelimiter_blocked"):
+            continue
+        field = family.name.rsplit("_", 1)[1]  # allowed | blocked
+        for sample in family.samples:
+            if not sample.name.endswith("_total"):
+                continue
+            key = (sample.labels["client_id"], sample.labels["endpoint"])
+            totals.setdefault(key, {"allowed": 0, "blocked": 0})[field] = int(sample.value)
+    return totals
