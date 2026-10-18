@@ -469,7 +469,7 @@
       <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
       View on GitHub
     </a>
-    <a class="btn btn-outline" href="https://ambarish0221-drl-demo.hf.space" target="_blank" rel="noopener">
+    <a class="btn btn-outline" href="https://huggingface.co/spaces/ambarish0221/DRL" target="_blank" rel="noopener">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
       Live Demo
     </a>
@@ -593,11 +593,12 @@
 <!-- ALGORITHMS -->
 <section id="algorithms">
   <div class="section-label">Core Algorithms</div>
-  <h2>Three Rate Limiting Strategies</h2>
+  <h2>Four Rate Limiting Strategies</h2>
   <p class="section-lead">
-    Each algorithm is a self-contained Redis-backed implementation. Choose one via the
+    Each algorithm is a single Redis Lua script: the read, decision and write happen atomically in one
+    round trip, using the Redis server clock, so limits hold across any number of limiter nodes. Choose one via the
     <code style="font-family:'JetBrains Mono',monospace;font-size:14px;color:var(--accent);">ALGORITHM</code>
-    environment variable or switch at runtime.
+    environment variable.
   </p>
 
   <table class="algo-table">
@@ -615,22 +616,29 @@
         <td>Token Bucket</td>
         <td>Tokens refill continuously at a fixed rate. Each request consumes one or more tokens. Unused tokens accumulate up to the bucket capacity.</td>
         <td>High. Accumulated tokens permit temporary spikes.</td>
-        <td>2 per client</td>
-        <td><span class="latency-badge">1.2ms</span></td>
+        <td>1 hash per client</td>
+        <td><span class="latency-badge">0.08ms</span></td>
+      </tr>
+      <tr>
+        <td>Leaky Bucket</td>
+        <td>Each request adds water to a bucket that drains at a constant rate. Requests that would overflow it are rejected, enforcing a smooth outflow.</td>
+        <td>Bounded. Up to the bucket size, then a steady rate.</td>
+        <td>1 hash per client</td>
+        <td><span class="latency-badge">0.08ms</span></td>
       </tr>
       <tr>
         <td>Fixed Window</td>
         <td>Time is divided into discrete windows. A counter increments per request and resets at the window boundary.</td>
         <td>Moderate. Double-rate bursts are possible at boundaries.</td>
-        <td>1 per client</td>
-        <td><span class="latency-badge">0.8ms</span></td>
+        <td>1 hash per client</td>
+        <td><span class="latency-badge">0.08ms</span></td>
       </tr>
       <tr>
         <td>Sliding Window</td>
-        <td>Evaluates requests within a true rolling window using per-second sub-buckets. Eliminates the boundary spike problem.</td>
-        <td>Low to moderate. Accurate continuous enforcement.</td>
-        <td>N per client (N = window seconds)</td>
-        <td><span class="latency-badge">2.3ms</span></td>
+        <td>Keeps a sorted-set log of request timestamps and counts those inside a true rolling window. Eliminates the boundary spike problem.</td>
+        <td>Low. Accurate continuous enforcement.</td>
+        <td>1 sorted set per client</td>
+        <td><span class="latency-badge">0.08ms</span></td>
       </tr>
     </tbody>
   </table>
@@ -823,7 +831,7 @@ curl http://localhost:8000/v1/rl/diagnostics/demo</pre>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
         GitHub Repository
       </a>
-      <a class="btn btn-outline" href="https://ambarish0221-drl-demo.hf.space" target="_blank" rel="noopener">
+      <a class="btn btn-outline" href="https://huggingface.co/spaces/ambarish0221/DRL" target="_blank" rel="noopener">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
         Live Demo on Hugging Face
       </a>

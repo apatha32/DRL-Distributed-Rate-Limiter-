@@ -9,6 +9,7 @@ class RateLimitAlgorithm(Enum):
     TOKEN_BUCKET = "token_bucket"
     FIXED_WINDOW = "fixed_window"
     SLIDING_WINDOW = "sliding_window"
+    LEAKY_BUCKET = "leaky_bucket"
 
 
 class FailMode(Enum):

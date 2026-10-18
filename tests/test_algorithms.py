@@ -1,199 +1,142 @@
 """
 Unit tests for rate limiting algorithms.
+
+Uses fakeredis with Lua support so the real Redis scripts are executed.
 """
-import pytest
+import threading
 import time
-from unittest.mock import Mock, patch
-from src.algorithms import TokenBucketLimiter, FixedWindowLimiter
-from src.redis_client import get_redis_client
+
+import fakeredis
+import pytest
+
+from src.algorithms import (
+    TokenBucketLimiter,
+    FixedWindowLimiter,
+    SlidingWindowLimiter,
+    LeakyBucketLimiter,
+)
+
+ALL_LIMITERS = [TokenBucketLimiter, FixedWindowLimiter, SlidingWindowLimiter, LeakyBucketLimiter]
 
 
-class MockRedis:
-    """Mock Redis client for testing."""
-    
-    def __init__(self):
-        self.data = {}
-        self.expirations = {}
-    
-    def get(self, key):
-        if key in self.data and time.time() < self.expirations.get(key, float('inf')):
-            return self.data[key]
-        return None
-    
-    def set(self, key, value, ex=None):
-        self.data[key] = str(value)
-        if ex:
-            self.expirations[key] = time.time() + ex
-    
-    def incr(self, key):
-        if key in self.data:
-            self.data[key] = str(int(self.data[key]) + 1)
-        else:
-            self.data[key] = "1"
-        return int(self.data[key])
-    
-    def expire(self, key, seconds):
-        self.expirations[key] = time.time() + seconds
-        return True
-    
-    def pipeline(self):
-        return MockPipeline(self)
-    
-    def ping(self):
-        return True
+@pytest.fixture
+def redis():
+    return fakeredis.FakeRedis(decode_responses=True)
 
 
-class MockPipeline:
-    """Mock Redis pipeline."""
-    
-    def __init__(self, redis):
-        self.redis = redis
-        self.commands = []
-    
-    def set(self, key, value, ex=None):
-        self.commands.append(('set', key, value, ex))
-        return self
-    
-    def expire(self, key, seconds):
-        self.commands.append(('expire', key, seconds))
-        return self
-    
-    def incr(self, key):
-        self.commands.append(('incr', key))
-        return self
-    
-    def execute(self):
-        results = []
-        for cmd in self.commands:
-            if cmd[0] == 'set':
-                self.redis.set(cmd[1], cmd[2], ex=cmd[3])
-                results.append(True)
-            elif cmd[0] == 'expire':
-                self.redis.expire(cmd[1], cmd[2])
-                results.append(True)
-            elif cmd[0] == 'incr':
-                results.append(self.redis.incr(cmd[1]))
-        return results
-
-
-def test_token_bucket_first_request():
-    """Test token bucket allows first request."""
-    redis = MockRedis()
-    limiter = TokenBucketLimiter(redis)
-    
-    allowed, remaining, retry_after = limiter.check_limit(
-        "client1", "global", rate=100, window=60, cost=1
-    )
-    
+@pytest.mark.parametrize("limiter_cls", ALL_LIMITERS)
+def test_first_request_allowed(redis, limiter_cls):
+    limiter = limiter_cls(redis)
+    allowed, remaining, retry_after = limiter.check_limit("client1", "global", rate=100, window=60)
     assert allowed is True
-    assert remaining == 99  # 100 - 1
+    assert remaining == 99
     assert retry_after == 0
 
 
-def test_token_bucket_burst():
-    """Test token bucket allows burst."""
-    redis = MockRedis()
-    limiter = TokenBucketLimiter(redis)
-    
-    # Use up 50 tokens
-    for i in range(50):
-        allowed, remaining, _ = limiter.check_limit(
-            "client1", "global", rate=100, window=60, cost=1
-        )
+@pytest.mark.parametrize("limiter_cls", ALL_LIMITERS)
+def test_exhaustion_blocks_with_retry_after(redis, limiter_cls):
+    limiter = limiter_cls(redis)
+    for _ in range(100):
+        allowed, _, _ = limiter.check_limit("client1", "global", rate=100, window=60)
         assert allowed is True
-    
-    # Should have 50 left
-    assert remaining == 50
 
-
-def test_token_bucket_exhaustion():
-    """Test token bucket exhaustion."""
-    redis = MockRedis()
-    limiter = TokenBucketLimiter(redis)
-    
-    # Use up all tokens
-    for i in range(100):
-        allowed, remaining, _ = limiter.check_limit(
-            "client1", "global", rate=100, window=60, cost=1
-        )
-    
-    # Next request should be blocked
-    allowed, remaining, retry_after = limiter.check_limit(
-        "client1", "global", rate=100, window=60, cost=1
-    )
-    
+    allowed, remaining, retry_after = limiter.check_limit("client1", "global", rate=100, window=60)
     assert allowed is False
     assert remaining == 0
     assert retry_after > 0
 
 
-def test_fixed_window_basic():
-    """Test fixed window basic functionality."""
-    redis = MockRedis()
-    limiter = FixedWindowLimiter(redis)
-    
-    # Make 50 requests
-    for i in range(50):
-        allowed, remaining, _ = limiter.check_limit(
-            "client1", "global", rate=100, window=60, cost=1
-        )
-        assert allowed is True
-    
-    # 51st should be allowed (limit is 100)
-    allowed, _, _ = limiter.check_limit(
-        "client1", "global", rate=100, window=60, cost=1
-    )
-    assert allowed is True
+@pytest.mark.parametrize("limiter_cls", ALL_LIMITERS)
+def test_blocked_requests_do_not_consume_budget(redis, limiter_cls):
+    limiter = limiter_cls(redis)
+    for _ in range(10):
+        limiter.check_limit("client1", "global", rate=10, window=60)
+    for _ in range(50):
+        allowed, remaining, _ = limiter.check_limit("client1", "global", rate=10, window=60)
+        assert allowed is False
+        assert remaining == 0
 
 
-def test_different_clients_isolated():
-    """Test that different clients have isolated limits."""
-    redis = MockRedis()
-    limiter = TokenBucketLimiter(redis)
-    
-    # Client 1 uses 50 tokens
-    for i in range(50):
-        limiter.check_limit("client1", "global", rate=100, window=60, cost=1)
-    
-    # Client 2 should still have full bucket
-    allowed, remaining, _ = limiter.check_limit(
-        "client2", "global", rate=100, window=60, cost=1
-    )
-    
-    assert allowed is True
-    assert remaining == 99
+@pytest.mark.parametrize("limiter_cls", ALL_LIMITERS)
+def test_clients_and_endpoints_isolated(redis, limiter_cls):
+    limiter = limiter_cls(redis)
+    for _ in range(50):
+        limiter.check_limit("client1", "login", rate=100, window=60)
+
+    assert limiter.check_limit("client2", "login", rate=100, window=60)[1] == 99
+    assert limiter.check_limit("client1", "global", rate=100, window=60)[1] == 99
 
 
-def test_different_endpoints_isolated():
-    """Test that different endpoints have isolated limits."""
-    redis = MockRedis()
-    limiter = TokenBucketLimiter(redis)
-    
-    # Use 50 tokens on "login" endpoint
-    for i in range(50):
-        limiter.check_limit("client1", "login", rate=100, window=60, cost=1)
-    
-    # "global" endpoint should still have full bucket
-    allowed, remaining, _ = limiter.check_limit(
-        "client1", "global", rate=100, window=60, cost=1
-    )
-    
-    assert allowed is True
-    assert remaining == 99
-
-
-def test_high_cost_request():
-    """Test requests with high cost."""
-    redis = MockRedis()
-    limiter = TokenBucketLimiter(redis)
-    
-    # Request with cost=10
-    allowed, remaining, _ = limiter.check_limit(
-        "client1", "global", rate=100, window=60, cost=10
-    )
-    
+@pytest.mark.parametrize("limiter_cls", ALL_LIMITERS)
+def test_cost_is_charged(redis, limiter_cls):
+    limiter = limiter_cls(redis)
+    allowed, remaining, _ = limiter.check_limit("client1", "global", rate=100, window=60, cost=10)
     assert allowed is True
     assert remaining == 90
+
+    allowed, _, _ = limiter.check_limit("client1", "global", rate=100, window=60, cost=91)
+    assert allowed is False
+
+
+@pytest.mark.parametrize("limiter_cls", ALL_LIMITERS)
+def test_concurrent_nodes_never_exceed_limit(limiter_cls):
+    """
+    Simulates many limiter nodes (separate client connections + script
+    instances) sharing one Redis. Because each check is a single atomic
+    script, exactly `rate` requests are admitted.
+    """
+    server = fakeredis.FakeServer()
+    rate, attempts_per_node, nodes = 50, 40, 8
+    admitted = []
+    lock = threading.Lock()
+
+    def node():
+        limiter = limiter_cls(fakeredis.FakeRedis(server=server, decode_responses=True))
+        for _ in range(attempts_per_node):
+            if limiter.check_limit("shared", "global", rate=rate, window=60)[0]:
+                with lock:
+                    admitted.append(1)
+
+    threads = [threading.Thread(target=node) for _ in range(nodes)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(admitted) == rate
+
+
+@pytest.mark.parametrize("limiter_cls", [TokenBucketLimiter, LeakyBucketLimiter])
+def test_bucket_recovers_over_time(redis, limiter_cls):
+    limiter = limiter_cls(redis)
+    # 10 per 1s => one unit every 100ms
+    for _ in range(10):
+        limiter.check_limit("client1", "global", rate=10, window=1)
+    assert limiter.check_limit("client1", "global", rate=10, window=1)[0] is False
+
+    time.sleep(0.25)
+    assert limiter.check_limit("client1", "global", rate=10, window=1)[0] is True
+
+
+def test_sliding_window_frees_capacity_as_entries_expire(redis):
+    limiter = SlidingWindowLimiter(redis)
+    for _ in range(5):
+        limiter.check_limit("client1", "global", rate=5, window=1)
+    allowed, _, retry_after = limiter.check_limit("client1", "global", rate=5, window=1)
+    assert allowed is False
+    assert 0 < retry_after <= 1000
+
+    time.sleep(1.05)
+    assert limiter.check_limit("client1", "global", rate=5, window=1)[0] is True
+
+
+def test_token_bucket_honours_lowered_limit(redis):
+    """The RL agent may lower a client's limit; the bucket must clamp to it."""
+    limiter = TokenBucketLimiter(redis)
+    limiter.check_limit("client1", "global", rate=100, window=60)
+    allowed, remaining, _ = limiter.check_limit("client1", "global", rate=10, window=60)
+    assert allowed is True
+    assert remaining == 9
 
 
 if __name__ == "__main__":

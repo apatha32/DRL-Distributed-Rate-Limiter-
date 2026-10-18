@@ -18,6 +18,7 @@ opentelemetry-instrumentation-redis==0.42b0
 opentelemetry-instrumentation-sqlalchemy==0.42b0
 pytest==7.4.3
 pytest-asyncio==0.21.1
+fakeredis[lua]==2.36.2
 testcontainers==3.7.1
 numpy
 aiofiles

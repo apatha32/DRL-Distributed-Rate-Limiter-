@@ -1,6 +1,7 @@
 """
 Main FastAPI application for the distributed rate limiter.
 """
+import asyncio
 import logging
 import os
 import time
@@ -26,8 +27,14 @@ from src.config import (
     DEFAULT_RATE_LIMIT_RULES,
 )
 from src.redis_client import get_redis_client, RedisClient
-from src.algorithms import TokenBucketLimiter, FixedWindowLimiter, SlidingWindowLimiter
+from src.algorithms import (
+    TokenBucketLimiter,
+    FixedWindowLimiter,
+    SlidingWindowLimiter,
+    LeakyBucketLimiter,
+)
 from src.adaptive_limiter import RLAdaptiveLimiter
+from src.rl_agent import get_agent, UPDATE_INTERVAL as RL_UPDATE_INTERVAL
 from src.circuit_breaker import CircuitBreaker, CircuitBreakerOpen
 from src.correlation import CorrelationIDMiddleware, setup_logging_with_correlation
 from src.tracing import init_tracing, instrument_app
@@ -67,6 +74,19 @@ redis_circuit_breaker = CircuitBreaker(
 )
 
 
+async def rl_update_loop():
+    """Step the RL agent every RL_UPDATE_INTERVAL seconds for all active clients."""
+    agent = get_agent()
+    while True:
+        await asyncio.sleep(RL_UPDATE_INTERVAL)
+        try:
+            stepped = agent.step_all()
+            if stepped:
+                logger.debug(f"[RL] update cycle adjusted {stepped} client(s)")
+        except Exception as e:
+            logger.error(f"[RL] update cycle failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context for startup and shutdown events."""
@@ -83,9 +103,13 @@ async def lifespan(app: FastAPI):
         if FAIL_MODE == FailMode.CLOSED:
             raise
     
+    rl_task = asyncio.create_task(rl_update_loop()) if ENABLE_RL else None
+
     yield
     
     # Shutdown
+    if rl_task:
+        rl_task.cancel()
     RedisClient.close()
     logger.info(f"[{SERVICE_NAME}] Service shutdown.")
 
@@ -104,7 +128,7 @@ app.add_middleware(CorrelationIDMiddleware)
 # Instrument app with OpenTelemetry
 instrument_app(app)
 
-# Serve the pre-built React dashboard if it exists (e.g. on Hugging Face)
+# Serve the pre-built React dashboard if it exists (production serves it from Vercel)
 _DIST = os.environ.get("DASHBOARD_DIST") or os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
 )
@@ -115,40 +139,23 @@ if os.path.isdir(_ASSETS):
     logger.info("Mounted /assets for dashboard")
 
 
+_ALGORITHMS = {
+    RateLimitAlgorithm.TOKEN_BUCKET: TokenBucketLimiter,
+    RateLimitAlgorithm.FIXED_WINDOW: FixedWindowLimiter,
+    RateLimitAlgorithm.SLIDING_WINDOW: SlidingWindowLimiter,
+    RateLimitAlgorithm.LEAKY_BUCKET: LeakyBucketLimiter,
+}
+_limiter = None
+
+
 def get_limiter():
-    """Get appropriate rate limiter based on configuration."""
-    try:
-        def _get_limiter():
-            redis_client = get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
-            if ALGORITHM == RateLimitAlgorithm.TOKEN_BUCKET:
-                base = TokenBucketLimiter(redis_client)
-            elif ALGORITHM == RateLimitAlgorithm.FIXED_WINDOW:
-                base = FixedWindowLimiter(redis_client)
-            elif ALGORITHM == RateLimitAlgorithm.SLIDING_WINDOW:
-                base = SlidingWindowLimiter(redis_client)
-            else:
-                raise ValueError(f"Unknown algorithm: {ALGORITHM}")
-            return RLAdaptiveLimiter(base) if ENABLE_RL else base
-        
-        return redis_circuit_breaker.call(_get_limiter)
-    except CircuitBreakerOpen as e:
-        logger.error(f"Circuit breaker open: {e}")
-        record_redis_error("circuit_breaker_open")
-        if FAIL_MODE == FailMode.CLOSED:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Rate limiter temporarily unavailable",
-            )
-        return None
-    except Exception as e:
-        logger.error(f"Error getting limiter: {e}")
-        record_redis_error("get_limiter")
-        if FAIL_MODE == FailMode.CLOSED:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Rate limiter unavailable",
-            )
-        return None
+    """Get the configured rate limiter (built once per process)."""
+    global _limiter
+    if _limiter is None:
+        redis_client = get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
+        base = _ALGORITHMS[ALGORITHM](redis_client)
+        _limiter = RLAdaptiveLimiter(base) if ENABLE_RL else base
+    return _limiter
 
 
 def get_rate_limit_rule(client_id: str, limit_key: str = "global") -> Dict[str, int]:
@@ -170,20 +177,6 @@ def get_rate_limit_rule(client_id: str, limit_key: str = "global") -> Dict[str, 
 @app.get("/", tags=["Info"], include_in_schema=False)
 async def root():
     """Serve the React dashboard if built, otherwise redirect to API docs."""
-    index_html = os.path.join(_DIST, "index.html")
-    if os.path.isfile(index_html):
-        return FileResponse(index_html)
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="/docs")
-
-
-@app.get("/{full_path:path}", include_in_schema=False)
-async def spa_fallback(full_path: str):
-    """SPA catch-all: serve index.html for React Router paths."""
-    # Don't intercept API or known server routes
-    if full_path.startswith(("v1/", "health", "docs", "openapi", "metrics", "circuit-breaker")):
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404)
     index_html = os.path.join(_DIST, "index.html")
     if os.path.isfile(index_html):
         return FileResponse(index_html)
@@ -228,22 +221,9 @@ async def check_limit(request: CheckLimitRequest):
             rate = rule["rate"]
             window = rule["window"]
             
-            # Get limiter with circuit breaker protection
-            limiter = get_limiter()
-            if limiter is None:
-                # Fail open: allow request if limiter unavailable
-                logger.warning(f"Limiter unavailable, allowing request from {request.client_id}")
-                return CheckLimitResponse(
-                    allowed=True,
-                    remaining=rate,
-                    retry_after_ms=0,
-                    limit=rate,
-                    window=window,
-                    reset_at=time.time() + window,
-                )
-            
-            # Check limit
-            allowed, remaining, retry_after_ms = limiter.check_limit(
+            # Check limit (one atomic Redis round trip, guarded by the circuit breaker)
+            allowed, remaining, retry_after_ms = redis_circuit_breaker.call(
+                lambda **kw: get_limiter().check_limit(**kw),
                 client_id=request.client_id,
                 limit_key=request.limit_key,
                 rate=rate,
@@ -370,7 +350,6 @@ async def rl_diagnostics(client_id: str):
     if not ENABLE_RL:
         return RLDiagnosticsResponse(client_id=client_id, rl_enabled=False)
 
-    from src.rl_agent import get_agent
     diag = get_agent().get_diagnostics(client_id)
     return RLDiagnosticsResponse(
         client_id=client_id,
@@ -387,6 +366,21 @@ async def circuit_breaker_status():
         "failure_count": redis_circuit_breaker.failure_count,
         "time_until_retry_seconds": redis_circuit_breaker._time_until_retry(),
     }
+
+
+# Must be registered last: Starlette matches routes in declaration order.
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str):
+    """SPA catch-all: serve index.html for React Router paths."""
+    # Don't intercept API or known server routes
+    if full_path.startswith(("v1/", "health", "docs", "openapi", "metrics", "circuit-breaker")):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404)
+    index_html = os.path.join(_DIST, "index.html")
+    if os.path.isfile(index_html):
+        return FileResponse(index_html)
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/docs")
 
 
 if __name__ == "__main__":

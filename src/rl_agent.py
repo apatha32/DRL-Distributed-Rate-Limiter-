@@ -1,8 +1,10 @@
 """
-Deep Reinforcement Learning agent for adaptive rate limiting.
+Tabular Q-learning agent for adaptive rate limiting.
 
-Uses a tabular Q-learning approach to learn per-client optimal rate limits
-based on observed traffic patterns. No external ML framework required — uses
+Learns per-client rate limits from observed traffic. The service calls
+step_all() every RL_UPDATE_INTERVAL_SEC (default 10 s); each step observes a
+client's RPS, block ratio and RPS trend over the last window, updates its
+Q-table, and raises / keeps / lowers that client's limit. No external ML framework required — uses
 only numpy.
 
 State space (discretized):
@@ -25,7 +27,6 @@ Reward signal:
 
 import json
 import logging
-import math
 import os
 import random
 import time
@@ -86,23 +87,20 @@ def _discretize_trend(delta_rps: float) -> int:
 
 
 class ClientStats:
-    """Rolling window stats for one client."""
-
-    WINDOW = 60  # seconds
+    """Traffic counters for one client over the current RL observation window."""
 
     def __init__(self) -> None:
         self.allowed: int = 0
         self.blocked: int = 0
-        self._rps_history: list = []   # (timestamp, rps_snapshot)
-        self._last_update: float = time.time()
-        self._prev_rps: float = 0.0
+        self.window_start: float = time.time()
+        self.prev_rps: float = 0.0     # RPS observed in the previous window
+        self.last_rps_delta: float = 0.0
 
     def record(self, allowed: bool) -> None:
         if allowed:
             self.allowed += 1
         else:
             self.blocked += 1
-        self._last_update = time.time()
 
     @property
     def total(self) -> int:
@@ -116,24 +114,16 @@ class ClientStats:
 
     @property
     def rps(self) -> float:
-        elapsed = time.time() - self._last_update
-        if elapsed < 1:
-            elapsed = 1
-        return self.total / min(elapsed, self.WINDOW)
-
-    @property
-    def rps_delta(self) -> float:
-        current = self.rps
-        delta = current - self._prev_rps
-        self._prev_rps = current
-        return delta
+        """Requests per second since the window opened."""
+        elapsed = max(1.0, time.time() - self.window_start)
+        return self.total / elapsed
 
     def reset_window(self) -> None:
-        """Reset counters each RL update cycle to keep a fresh window."""
-        self._prev_rps = self.rps
+        """Close the window: remember its RPS for the trend signal, zero counters."""
+        self.prev_rps = self.rps
         self.allowed = 0
         self.blocked = 0
-        self._last_update = time.time()
+        self.window_start = time.time()
 
 
 class RLAgent:
@@ -170,15 +160,29 @@ class RLAgent:
         self._stats[client_id].record(allowed)
 
     def get_limit(self, client_id: str, base_limit: int) -> int:
-        """
-        Return the RL-adjusted rate limit for this client.
-        Runs an RL update step if UPDATE_INTERVAL seconds have elapsed.
-        """
+        """Return the RL-adjusted rate limit for this client (O(1), no learning)."""
         self._ensure_client(client_id, base_limit)
-        now = time.time()
-        if now - self._last_update.get(client_id, 0) >= UPDATE_INTERVAL:
-            self._update(client_id)
         return self._current_limits[client_id]
+
+    def step_all(self) -> int:
+        """
+        Run one observe → learn → act step for every client whose observation
+        window has reached UPDATE_INTERVAL seconds. Called by the service's
+        background loop every UPDATE_INTERVAL seconds. Returns clients stepped.
+        """
+        now = time.time()
+        stepped = 0
+        for client_id in list(self._stats):
+            if now - self._last_update[client_id] < UPDATE_INTERVAL:
+                continue
+            if self._stats[client_id].total == 0:
+                # Idle client: nothing to learn from, keep the current limit
+                self._stats[client_id].reset_window()
+                self._last_update[client_id] = now
+                continue
+            self._update(client_id)
+            stepped += 1
+        return stepped
 
     def get_diagnostics(self, client_id: str) -> Dict:
         """Return human-readable diagnostics for one client."""
@@ -190,7 +194,7 @@ class RLAgent:
             "epsilon": round(self._epsilons.get(client_id, EPSILON_START), 4),
             "rps": round(stats.rps, 2),
             "block_ratio": round(stats.block_ratio, 4),
-            "rps_delta": round(stats.rps_delta, 2),
+            "rps_delta": round(stats.last_rps_delta, 2),
             "total_requests_window": stats.total,
         }
 
@@ -210,9 +214,10 @@ class RLAgent:
 
     def _get_state(self, client_id: str) -> int:
         stats = self._stats[client_id]
+        stats.last_rps_delta = stats.rps - stats.prev_rps
         t = _discretize_traffic(stats.rps)
         b = _discretize_block_ratio(stats.block_ratio)
-        d = _discretize_trend(stats.rps_delta)
+        d = _discretize_trend(stats.last_rps_delta)
         return _encode_state(t, b, d)
 
     def _compute_reward(self, client_id: str) -> float:
@@ -245,10 +250,11 @@ class RLAgent:
 
     def _apply_action(self, client_id: str, action: int) -> None:
         current = self._current_limits[client_id]
+        step = max(1, round(current * LIMIT_STEP_PCT))  # at least one request
         if action == 0:  # decrease
-            new_limit = max(MIN_LIMIT, math.floor(current * (1 - LIMIT_STEP_PCT)))
+            new_limit = max(MIN_LIMIT, current - step)
         elif action == 2:  # increase
-            new_limit = min(MAX_LIMIT, math.ceil(current * (1 + LIMIT_STEP_PCT)))
+            new_limit = min(MAX_LIMIT, current + step)
         else:  # keep
             new_limit = current
 

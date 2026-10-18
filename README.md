@@ -1,18 +1,8 @@
----
-title: DRL - Distributed Rate Limiter
-emoji: 🚀
-colorFrom: blue
-colorTo: purple
-sdk: docker
-app_port: 7860
-pinned: true
-license: mit
-short_description: Distributed rate limiter with Q-learning AI
----
-
 # Distributed Rate Limiter (DRL)
 
-Production-grade distributed rate limiting service with circuit breaker resilience, distributed tracing, and comprehensive observability. Built for modern backend systems handling 10K+ requests/second.
+Distributed API rate limiter supporting four algorithms (Token Bucket, Fixed Window, Sliding Window, Leaky Bucket) backed by Redis. Every decision is a single atomic Lua script, so per-client limits are enforced consistently across any number of limiter nodes with sub-millisecond overhead.
+
+A tabular Q-learning agent sits on top of the limiter: every 10 seconds it observes each client's live RPS and block ratio and raises, holds, or lowers that client's limit — no manual tuning under bursty load.
 
 ## ✅ CI/CD Status
 
@@ -34,10 +24,16 @@ Every push triggers:
 
 ## 📊 What You Get
 
-**3 Rate Limiting Algorithms**
-- **Token Bucket** - Burst-friendly, smooth refill (~1.2ms latency)
-- **Fixed Window** - Simple baseline (~0.8ms latency)
-- **Sliding Window** - Accurate timestamps, no boundary spikes (~2.3ms latency)
+**4 Rate Limiting Algorithms** — each one atomic Redis Lua script (one round trip, Redis server clock)
+- **Token Bucket** - Burst-friendly, continuous refill
+- **Leaky Bucket** - Constant drain rate, smooths traffic
+- **Fixed Window** - Cheapest, counter per aligned window
+- **Sliding Window** - Exact timestamp log, no boundary spikes
+
+**Adaptive Limits (Q-learning)**
+- Per-client Q-table over traffic level × block ratio × RPS trend (27 states)
+- Actions: lower / hold / raise the client's limit by 10%, every 10 s (`RL_UPDATE_INTERVAL_SEC`)
+- Enable with `ENABLE_RL=true`; inspect with `GET /v1/rl/diagnostics/{client_id}`
 
 **Production Features**
 - ✅ Circuit breaker pattern (auto-recovery on failures)
@@ -164,19 +160,27 @@ curl -X POST http://localhost:8000/v1/check \
 
 ## 🧠 Algorithm Comparison
 
-| Feature | Token Bucket | Fixed Window | Sliding Window |
-|---------|------------|------------|--------------|
-| Latency (avg) | 1.2ms | 0.8ms | 2.3ms |
-| Memory (1K clients, 60s) | 2MB | 1MB | 15MB |
-| Boundary Spike | ❌ | ✅ | ❌ |
-| Bursty Traffic | ✅ | ⚠️ | ❌ |
-| Recommended | ✅ | Baseline | Strict |
+| | Token Bucket | Leaky Bucket | Fixed Window | Sliding Window |
+|---|---|---|---|---|
+| p50 latency | 0.080 ms | 0.080 ms | 0.079 ms | 0.083 ms |
+| p99 latency | 0.123 ms | 0.145 ms | 0.106 ms | 0.106 ms |
+| State per client | 1 hash | 1 hash | 1 hash | sorted set (1 entry / request) |
+| Boundary spike | No | No | Yes (up to 2×) | No |
+| Allows bursts | Yes | Up to bucket size | Yes | No |
+
+Latency = one full limit decision (EVALSHA round trip) measured with `scripts/benchmark.py`, 20K checks per algorithm across 100 clients, app and Redis 7 on the same Docker network. Reproduce:
+
+```bash
+docker run -d -p 6379:6379 redis:7-alpine
+python scripts/benchmark.py -n 20000
+```
 
 ## 🧪 Testing
 
 ```bash
-# Unit tests
-pytest tests/test_algorithms.py -v
+# Unit tests (algorithms run as real Lua via fakeredis, incl. multi-node concurrency)
+pip install "fakeredis[lua]"
+pytest tests/test_algorithms.py tests/test_rl_agent.py -v
 
 # Integration tests (requires Docker)
 pytest tests/test_integration.py -v
@@ -222,7 +226,9 @@ HALF_OPEN (Testing)
 ```
 src/
   ├── main.py              # FastAPI app (330 lines) - all endpoints
-  ├── algorithms.py        # Token bucket, fixed window, sliding window
+  ├── algorithms.py        # Token / leaky bucket, fixed / sliding window (Redis Lua)
+  ├── rl_agent.py          # Tabular Q-learning agent
+  ├── adaptive_limiter.py  # Applies RL-adjusted limits to any algorithm
   ├── circuit_breaker.py   # Resilience pattern
   ├── correlation.py       # Request tracking
   ├── tracing.py           # OpenTelemetry setup
@@ -250,12 +256,15 @@ requirements.txt           # Production dependencies
 ## ⚙️ Configuration
 
 Environment variables:
+- `REDIS_URL` - Full Redis URL incl. password (takes precedence; set automatically on Railway)
 - `REDIS_HOST` - Redis hostname (default: localhost)
 - `REDIS_PORT` - Redis port (default: 6379)
 - `DATABASE_URL` - PostgreSQL connection (optional)
-- `ALGORITHM` - Algorithm choice: token_bucket | fixed_window | sliding_window
+- `ALGORITHM` - Algorithm choice: token_bucket | leaky_bucket | fixed_window | sliding_window
 - `FAIL_MODE` - On failure: open (allow) | closed (reject)
-- `JAEGER_ENABLED` - Enable tracing (default: true)
+- `ENABLE_RL` - Enable the Q-learning adaptive limits (default: false; true in the Docker image)
+- `RL_UPDATE_INTERVAL_SEC` - Seconds between RL observe/adjust cycles (default: 10)
+- `JAEGER_ENABLED` - Enable tracing (default: false)
 - `JAEGER_HOST` - Jaeger hostname (default: localhost)
 
 ## 🎯 Demo Clients
@@ -270,14 +279,27 @@ Environment variables:
 
 ## 📚 Performance Metrics
 
-- **Throughput:** 10K+ requests/second
-- **Latency P95:** <3.5ms
-- **Redis Operations:** Atomic (no race conditions)
-- **Memory Efficient:** 1MB per 1K clients (token bucket)
+- **Decision latency:** p50 ≈ 0.08 ms, p99 ≤ 0.15 ms per check (see Algorithm Comparison)
+- **Atomicity:** each check is one Lua script; `tests/test_algorithms.py::test_concurrent_nodes_never_exceed_limit` runs 8 concurrent nodes against one Redis and asserts exactly `rate` requests are admitted
+- **Clock-skew safe:** scripts use Redis `TIME`, not node clocks
 
 ## 🚀 Deployment
 
-### Production with Docker Compose
+### Railway (API + Redis)
+
+1. In Railway, **New Project → Deploy from GitHub repo** and pick this repo. It builds from the root `Dockerfile` using `railway.json` (health check: `/health`).
+2. In the same project, **+ New → Database → Redis**.
+3. On the API service, add the variable `REDIS_URL` = `${{Redis.REDIS_URL}}` (reference to the Redis service).
+4. Optional: `ALGORITHM`, `ENABLE_RL`, `FAIL_MODE` (see Configuration).
+5. **Settings → Networking → Generate Domain** to get the public API URL (`/docs` for Swagger).
+
+### Vercel (Dashboard)
+
+1. In Vercel, **Add New → Project**, import this repo.
+2. Set **Root Directory** to `dashboard`. Framework, build command and SPA routing come from `dashboard/vercel.json`.
+3. Deploy.
+
+### Local with Docker Compose
 ```bash
 docker-compose up -d
 ```
