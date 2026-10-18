@@ -586,9 +586,10 @@ async def apply_recommendation(analysis_id: str, index: int):
 if __name__ == "__main__":
     import uvicorn
 
+    # Local runs listen on localhost only; containers set HOST (the Dockerfile runs uvicorn directly)
     uvicorn.run(
         app,
-        host="0.0.0.0",
-        port=8000,
+        host=os.getenv("HOST", "127.0.0.1"),
+        port=int(os.getenv("PORT", "8000")),
         log_level=LOG_LEVEL.lower(),
     )
