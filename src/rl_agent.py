@@ -30,7 +30,8 @@ import logging
 import os
 import random
 import time
-from typing import Dict, Tuple, Optional
+from collections import deque
+from typing import Deque, Dict, List, Optional
 
 import numpy as np
 
@@ -46,6 +47,9 @@ LIMIT_STEP_PCT: float = float(os.getenv("RL_LIMIT_STEP_PCT", "0.10"))  # 10 %
 MIN_LIMIT: int = int(os.getenv("RL_MIN_LIMIT", "5"))
 MAX_LIMIT: int = int(os.getenv("RL_MAX_LIMIT", "10000"))
 UPDATE_INTERVAL: int = int(os.getenv("RL_UPDATE_INTERVAL_SEC", "10"))
+HISTORY_LEN: int = int(os.getenv("RL_HISTORY_LEN", "30"))  # decisions kept per client
+
+ACTION_NAMES = ["decrease", "keep", "increase"]
 
 # State dimension sizes
 N_TRAFFIC = 3   # low / medium / high
@@ -149,6 +153,8 @@ class RLAgent:
         self._last_state: Dict[str, Optional[int]] = {}
         # client_id → last action taken
         self._last_action: Dict[str, Optional[int]] = {}
+        # client_id → recent decisions (for diagnostics and the AI analyst)
+        self._history: Dict[str, Deque[Dict]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -163,6 +169,23 @@ class RLAgent:
         """Return the RL-adjusted rate limit for this client (O(1), no learning)."""
         self._ensure_client(client_id, base_limit)
         return self._current_limits[client_id]
+
+    def set_base_limit(self, client_id: str, limit: int) -> None:
+        """An operator changed this client's rule: restart learning from the new limit."""
+        self._ensure_client(client_id, limit)
+        self._current_limits[client_id] = limit
+        self._last_state[client_id] = None
+        self._last_action[client_id] = None
+
+    def get_history(self, client_id: str) -> List[Dict]:
+        return list(self._history.get(client_id, []))
+
+    def snapshot(self) -> Dict[str, Dict]:
+        """Diagnostics plus recent decisions for every tracked client."""
+        return {
+            cid: {**self.get_diagnostics(cid), "recent_decisions": self.get_history(cid)}
+            for cid in self._stats
+        }
 
     def step_all(self) -> int:
         """
@@ -211,6 +234,7 @@ class RLAgent:
             self._last_update[client_id] = time.time()
             self._last_state[client_id] = None
             self._last_action[client_id] = None
+            self._history[client_id] = deque(maxlen=HISTORY_LEN)
 
     def _get_state(self, client_id: str) -> int:
         stats = self._stats[client_id]
@@ -261,7 +285,7 @@ class RLAgent:
         if new_limit != current:
             logger.info(
                 "[RL] client=%s action=%s limit %d → %d",
-                client_id, ["decrease", "keep", "increase"][action], current, new_limit,
+                client_id, ACTION_NAMES[action], current, new_limit,
             )
         self._current_limits[client_id] = new_limit
 
@@ -284,7 +308,19 @@ class RLAgent:
 
         # Choose and apply next action
         action = self._choose_action(client_id, new_state)
+        limit_before = self._current_limits[client_id]
         self._apply_action(client_id, action)
+        self._history[client_id].append({
+            "ts": round(time.time(), 1),
+            "rps": round(stats.rps, 2),
+            "block_ratio": round(stats.block_ratio, 4),
+            "rps_delta": round(stats.last_rps_delta, 2),
+            "requests": stats.total,
+            "reward": round(reward, 2),
+            "action": ACTION_NAMES[action],
+            "limit_before": limit_before,
+            "limit_after": self._current_limits[client_id],
+        })
 
         # Decay exploration
         eps = self._epsilons[client_id]
@@ -330,6 +366,7 @@ class RLAgent:
             self._epsilons[cid] = entry["epsilon"]
             self._current_limits[cid] = entry["current_limit"]
             self._stats[cid] = ClientStats()
+            self._history[cid] = deque(maxlen=HISTORY_LEN)
             self._last_state[cid] = None
             self._last_action[cid] = None
             self._last_update[cid] = 0.0

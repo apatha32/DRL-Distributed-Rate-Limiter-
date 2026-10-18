@@ -59,6 +59,28 @@ class CircuitBreaker:
         Returns:
             Function result or raises exception
         """
+        self._before_call()
+        try:
+            result = func(*args, **kwargs)
+            self._on_success()
+            return result
+        except self.expected_exception as e:
+            self._on_failure()
+            raise
+    
+    async def call_async(self, func: Callable, *args, **kwargs) -> Any:
+        """Await an async function with circuit breaker protection."""
+        self._before_call()
+        try:
+            result = await func(*args, **kwargs)
+            self._on_success()
+            return result
+        except self.expected_exception:
+            self._on_failure()
+            raise
+
+    def _before_call(self):
+        """Raise if the circuit is open (moving to HALF_OPEN once the timeout passes)."""
         if self.state == CircuitState.OPEN:
             if self._should_attempt_reset():
                 self.state = CircuitState.HALF_OPEN
@@ -68,15 +90,7 @@ class CircuitBreaker:
                     f"Circuit breaker is OPEN. "
                     f"Retry after {self._time_until_retry()}s"
                 )
-        
-        try:
-            result = func(*args, **kwargs)
-            self._on_success()
-            return result
-        except self.expected_exception as e:
-            self._on_failure()
-            raise
-    
+
     def _on_success(self):
         """Record successful call."""
         self.failure_count = 0

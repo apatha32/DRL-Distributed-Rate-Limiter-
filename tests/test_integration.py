@@ -87,7 +87,8 @@ class TestRateLimiterIntegration:
         
         # Second request should be blocked
         response = client.post("/v1/check", json=payload)
-        assert response.status_code == 200
+        assert response.status_code == 429
+        assert int(response.headers["Retry-After"]) >= 1
         data = response.json()
         assert data["allowed"] is False
     
@@ -160,7 +161,7 @@ class TestRateLimiterIntegration:
                 "cost": 1,
             }
         )
-        assert response.status_code == 200
+        assert response.status_code == 429
         assert response.json()["allowed"] is False
     
     def test_high_cost_request(self, client):
@@ -187,7 +188,7 @@ class TestRateLimiterIntegration:
         
         # Third request should be blocked
         response = client.post("/v1/check", json=payload)
-        assert response.status_code == 200
+        assert response.status_code == 429
         data = response.json()
         assert data["allowed"] is False
     
@@ -208,28 +209,6 @@ class TestRateLimiterIntegration:
         assert response.status_code == 200
         assert b"ratelimiter_allowed_total" in response.content
         assert b"ratelimiter_blocked_total" in response.content
-
-
-class TestAlgorithmComparison:
-    """Compare different rate limiting algorithms."""
-    
-    def test_token_bucket_vs_fixed_window(self):
-        """Verify different algorithms have different behavior."""
-        # This is a logical test showing algorithms exist
-        from src.algorithms import TokenBucketLimiter, FixedWindowLimiter
-        from unittest.mock import Mock
-        
-        redis = Mock()
-        redis.get = Mock(return_value=None)
-        redis.set = Mock()
-        redis.pipeline = Mock()
-        
-        # Both should be instantiable
-        token_bucket = TokenBucketLimiter(redis)
-        fixed_window = FixedWindowLimiter(redis)
-        
-        assert token_bucket is not None
-        assert fixed_window is not None
 
 
 if __name__ == "__main__":

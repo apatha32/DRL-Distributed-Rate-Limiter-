@@ -2,16 +2,18 @@
 Main FastAPI application for the distributed rate limiter.
 """
 import asyncio
+import copy
 import logging
-import os
+import math
 import time
 from contextlib import asynccontextmanager
+from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from prometheus_client import generate_latest
-from typing import Dict, Any
+from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, RedirectResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from pydantic import ValidationError
 
 from src.config import (
     REDIS_HOST,
@@ -22,6 +24,10 @@ from src.config import (
     FAIL_MODE,
     ALGORITHM,
     ENABLE_RL,
+    ADMIN_API_KEY,
+    CORS_ORIGINS,
+    ANALYST_MODEL,
+    ANALYST_MAX_PER_HOUR,
     FailMode,
     RateLimitAlgorithm,
     DEFAULT_RATE_LIMIT_RULES,
@@ -33,10 +39,12 @@ from src.algorithms import (
     SlidingWindowLimiter,
     LeakyBucketLimiter,
 )
-from src.adaptive_limiter import RLAdaptiveLimiter
+from src.adaptive_limiter import RLAdaptiveLimiter, agent_key
+from src.analyst import AnalysisStore, AnalystError, TrafficAnalyst, build_snapshot
 from src.rl_agent import get_agent, UPDATE_INTERVAL as RL_UPDATE_INTERVAL
 from src.circuit_breaker import CircuitBreaker, CircuitBreakerOpen
 from src.correlation import CorrelationIDMiddleware, setup_logging_with_correlation
+from src.security import require_admin
 from src.tracing import init_tracing, instrument_app
 from src.database import init_db
 from src.metrics import (
@@ -44,9 +52,12 @@ from src.metrics import (
     record_blocked,
     record_redis_error,
     check_latency,
+    client_totals,
     get_registry,
 )
 from src.models import (
+    AnalysisRecord,
+    AnalystStatus,
     CheckLimitRequest,
     CheckLimitResponse,
     UpdateRuleRequest,
@@ -63,8 +74,8 @@ logger = logging.getLogger(__name__)
 # Initialize tracing
 init_tracing(service_name=SERVICE_NAME)
 
-# Global rate limit rules storage
-rate_limit_rules: Dict[str, Any] = DEFAULT_RATE_LIMIT_RULES.copy()
+# Rate limit rules (per process)
+rate_limit_rules: Dict[str, Any] = copy.deepcopy(DEFAULT_RATE_LIMIT_RULES)
 
 # Circuit breaker for Redis
 redis_circuit_breaker = CircuitBreaker(
@@ -72,6 +83,8 @@ redis_circuit_breaker = CircuitBreaker(
     recovery_timeout=60,
     expected_exception=Exception,
 )
+
+analyst = TrafficAnalyst()
 
 
 async def rl_update_loop():
@@ -90,53 +103,53 @@ async def rl_update_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context for startup and shutdown events."""
-    # Startup
     try:
-        redis_client = get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
+        await get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
         logger.info(f"[{SERVICE_NAME}] Service started. Redis connected.")
-        
-        # Initialize database
-        init_db()
-        logger.info(f"[{SERVICE_NAME}] Database initialized.")
     except Exception as e:
-        logger.error(f"[{SERVICE_NAME}] Failed to initialize: {e}")
+        logger.error(f"[{SERVICE_NAME}] Redis unavailable at startup: {e}")
         if FAIL_MODE == FailMode.CLOSED:
             raise
-    
+    try:
+        init_db()
+    except Exception as e:
+        logger.warning(f"[{SERVICE_NAME}] Database init failed: {e}")
+    if not ADMIN_API_KEY:
+        logger.warning("ADMIN_API_KEY not set: admin endpoints are disabled")
+
     rl_task = asyncio.create_task(rl_update_loop()) if ENABLE_RL else None
 
     yield
-    
-    # Shutdown
+
     if rl_task:
         rl_task.cancel()
-    RedisClient.close()
+    await RedisClient.close()
     logger.info(f"[{SERVICE_NAME}] Service shutdown.")
 
 
-# Create FastAPI app
 app = FastAPI(
     title="Distributed Rate Limiter",
-    description="Production-ready distributed rate limiting service with circuit breakers and tracing",
-    version="0.2.0",
+    description=(
+        "Distributed rate limiting with four atomic Redis algorithms, Q-learning adaptive "
+        "limits, and a Claude-powered traffic analyst. Admin endpoints require `X-API-Key`."
+    ),
+    version="1.0.0",
     lifespan=lifespan,
 )
 
-# Add middleware for correlation IDs
 app.add_middleware(CorrelationIDMiddleware)
-
-# Instrument app with OpenTelemetry
+if CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "X-API-Key", "X-Correlation-ID"],
+        expose_headers=[
+            "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset",
+            "Retry-After", "X-Correlation-ID",
+        ],
+    )
 instrument_app(app)
-
-# Serve the pre-built React dashboard if it exists (production serves it from Vercel)
-_DIST = os.environ.get("DASHBOARD_DIST") or os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
-)
-_ASSETS = os.path.join(_DIST, "assets")
-logger.info(f"Dashboard dist path: {_DIST} | exists: {os.path.isdir(_DIST)}")
-if os.path.isdir(_ASSETS):
-    app.mount("/assets", StaticFiles(directory=_ASSETS), name="assets")
-    logger.info("Mounted /assets for dashboard")
 
 
 _ALGORITHMS = {
@@ -146,13 +159,14 @@ _ALGORITHMS = {
     RateLimitAlgorithm.LEAKY_BUCKET: LeakyBucketLimiter,
 }
 _limiter = None
+_analysis_quota: Optional[TokenBucketLimiter] = None
 
 
-def get_limiter():
+async def get_limiter():
     """Get the configured rate limiter (built once per process)."""
     global _limiter
     if _limiter is None:
-        redis_client = get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
+        redis_client = await get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
         base = _ALGORITHMS[ALGORITHM](redis_client)
         _limiter = RLAdaptiveLimiter(base) if ENABLE_RL else base
     return _limiter
@@ -160,40 +174,62 @@ def get_limiter():
 
 def get_rate_limit_rule(client_id: str, limit_key: str = "global") -> Dict[str, int]:
     """Get rate limit rule for a client and endpoint."""
-    # Check for endpoint-specific rule
     if client_id in rate_limit_rules:
         client_rules = rate_limit_rules[client_id]
         if "endpoints" in client_rules and limit_key in client_rules["endpoints"]:
             return client_rules["endpoints"][limit_key]
-        # Return client-level rule
         return {
             "rate": client_rules.get("rate", rate_limit_rules["default"]["rate"]),
             "window": client_rules.get("window", rate_limit_rules["default"]["window"]),
         }
-    # Return default rule
     return rate_limit_rules["default"]
 
 
-@app.get("/", tags=["Info"], include_in_schema=False)
+def apply_rule(rule: UpdateRuleRequest) -> RuleInfo:
+    """Store a rule and restart RL learning for that client/endpoint from the new limit."""
+    client_rules = rate_limit_rules.setdefault(rule.client_id, {})
+    if rule.endpoint:
+        client_rules.setdefault("endpoints", {})[rule.endpoint] = {
+            "rate": rule.rate,
+            "window": rule.window,
+        }
+    else:
+        client_rules.update(rate=rule.rate, window=rule.window)
+
+    if ENABLE_RL:
+        get_agent().set_base_limit(agent_key(rule.client_id, rule.endpoint or "global"), rule.rate)
+
+    logger.info(f"Updated rate limit rule: {rule.client_id} {rule.endpoint or ''} "
+                f"{rule.rate}/{rule.window}s")
+    return RuleInfo(**rule.model_dump())
+
+
+def _rate_limit_headers(limit: int, remaining: int, retry_after_ms: int, window: int) -> Dict[str, str]:
+    headers = {
+        "X-RateLimit-Limit": str(limit),
+        "X-RateLimit-Remaining": str(remaining),
+        "X-RateLimit-Reset": str(math.ceil(retry_after_ms / 1000) if retry_after_ms else window),
+    }
+    if retry_after_ms:
+        headers["Retry-After"] = str(max(1, math.ceil(retry_after_ms / 1000)))
+    return headers
+
+
+@app.get("/", include_in_schema=False)
 async def root():
-    """Serve the React dashboard if built, otherwise redirect to API docs."""
-    index_html = os.path.join(_DIST, "index.html")
-    if os.path.isfile(index_html):
-        return FileResponse(index_html)
-    from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/docs")
 
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
-    """Health check endpoint with circuit breaker status."""
+    """Liveness check; reports `degraded` when Redis is unreachable."""
     try:
-        redis_client = get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
-        redis_available = redis_client.ping()
+        redis_client = await get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
+        redis_available = bool(await redis_client.ping())
     except Exception as e:
         logger.warning(f"Redis health check failed: {e}")
         redis_available = False
-    
+
     return HealthResponse(
         status="healthy" if redis_available else "degraded",
         service=SERVICE_NAME,
@@ -201,144 +237,87 @@ async def health_check():
     )
 
 
-@app.post("/v1/check", response_model=CheckLimitResponse, tags=["Rate Limiting"])
-async def check_limit(request: CheckLimitRequest):
+@app.post(
+    "/v1/check",
+    response_model=CheckLimitResponse,
+    tags=["Rate Limiting"],
+    responses={429: {"model": CheckLimitResponse, "description": "Rate limit exceeded"}},
+)
+async def check_limit(request: CheckLimitRequest, response: Response):
     """
-    Check if a request should be allowed based on rate limits.
-    
-    Returns:
-    - allowed: true if request should be allowed
-    - remaining: tokens/requests remaining in current window
-    - retry_after_ms: milliseconds to wait before retrying (if blocked)
-    - limit: configured rate limit
-    - window: time window in seconds
-    - reset_at: timestamp when limit resets
+    Decide whether a request should be allowed.
+
+    Returns 200 when allowed and 429 when blocked; both carry the decision body plus
+    `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers, and
+    blocked responses add `Retry-After`. `limit` is the enforced limit, which the RL agent
+    may have adjusted from the configured rule.
     """
+    rule = get_rate_limit_rule(request.client_id, request.limit_key)
+    rate, window = rule["rate"], rule["window"]
+
+    async def decide():
+        limiter = await get_limiter()
+        limit = limiter.effective_limit(request.client_id, request.limit_key, rate)
+        allowed, remaining, retry_after_ms = await limiter.check_limit(
+            client_id=request.client_id,
+            limit_key=request.limit_key,
+            rate=rate,
+            window=window,
+            cost=request.cost,
+        )
+        return limit, allowed, remaining, retry_after_ms
+
     with check_latency.time():
         try:
-            # Get rate limit rule
-            rule = get_rate_limit_rule(request.client_id, request.limit_key)
-            rate = rule["rate"]
-            window = rule["window"]
-            
-            # Check limit (one atomic Redis round trip, guarded by the circuit breaker)
-            allowed, remaining, retry_after_ms = redis_circuit_breaker.call(
-                lambda **kw: get_limiter().check_limit(**kw),
-                client_id=request.client_id,
-                limit_key=request.limit_key,
-                rate=rate,
-                window=window,
-                cost=request.cost,
-            )
-            
-            # Record metrics
-            if allowed:
-                record_allowed(request.client_id, request.limit_key)
-            else:
-                record_blocked(request.client_id, request.limit_key)
-            
-            return CheckLimitResponse(
-                allowed=allowed,
-                remaining=remaining,
-                retry_after_ms=retry_after_ms,
-                limit=rate,
-                window=window,
-                reset_at=time.time() + window,
-            )
-            
-        except CircuitBreakerOpen as e:
-            logger.error(f"Circuit breaker open: {e}")
-            record_redis_error("check_circuit_breaker_open")
-            
+            limit, allowed, remaining, retry_after_ms = await redis_circuit_breaker.call_async(decide)
+        except Exception as e:
+            reason = "circuit_breaker_open" if isinstance(e, CircuitBreakerOpen) else "check"
+            logger.error(f"Rate limit check failed ({reason}): {e}")
+            record_redis_error(reason)
             if FAIL_MODE == FailMode.CLOSED:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Rate limiter temporarily unavailable",
                 )
-            else:
-                # Fail open
-                rule = get_rate_limit_rule(request.client_id, request.limit_key)
-                return CheckLimitResponse(
-                    allowed=True,
-                    remaining=rule["rate"],
-                    retry_after_ms=0,
-                    limit=rule["rate"],
-                    window=rule["window"],
-                    reset_at=time.time() + rule["window"],
-                )
-        
-        except Exception as e:
-            logger.error(f"Error in check_limit: {e}")
-            record_redis_error("check")
-            
-            if FAIL_MODE == FailMode.CLOSED:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Rate limiter service error",
-                )
-            else:
-                # Fail open - allow request
-                rule = get_rate_limit_rule(request.client_id, request.limit_key)
-                return CheckLimitResponse(
-                    allowed=True,
-                    remaining=rule["rate"],
-                    retry_after_ms=0,
-                    limit=rule["rate"],
-                    window=rule["window"],
-                    reset_at=time.time() + rule["window"],
-                )
+            # Fail open: allow the request and say so
+            response.headers["X-RateLimit-Degraded"] = "true"
+            return CheckLimitResponse(
+                allowed=True,
+                remaining=rate,
+                retry_after_ms=0,
+                limit=rate,
+                window=window,
+                reset_at=time.time() + window,
+            )
 
+    if allowed:
+        record_allowed(request.client_id, request.limit_key)
+    else:
+        record_blocked(request.client_id, request.limit_key)
 
-@app.post("/v1/admin/rules", response_model=RuleInfo, tags=["Admin"])
-async def update_rule(request: UpdateRuleRequest):
-    """
-    Update rate limit rule for a client or endpoint (admin endpoint).
-    """
-    try:
-        if request.endpoint:
-            # Update endpoint-specific rule
-            if request.client_id not in rate_limit_rules:
-                rate_limit_rules[request.client_id] = {"endpoints": {}}
-            if "endpoints" not in rate_limit_rules[request.client_id]:
-                rate_limit_rules[request.client_id]["endpoints"] = {}
-            
-            rate_limit_rules[request.client_id]["endpoints"][request.endpoint] = {
-                "rate": request.rate,
-                "window": request.window,
-            }
-        else:
-            # Update client-level rule
-            rate_limit_rules[request.client_id] = {
-                "rate": request.rate,
-                "window": request.window,
-            }
-        
-        logger.info(f"Updated rate limit rule: {request.client_id}")
-        
-        return RuleInfo(
-            client_id=request.client_id,
-            rate=request.rate,
-            window=request.window,
-            endpoint=request.endpoint,
+    headers = _rate_limit_headers(limit, remaining, retry_after_ms, window)
+    body = CheckLimitResponse(
+        allowed=allowed,
+        remaining=remaining,
+        retry_after_ms=retry_after_ms,
+        limit=limit,
+        window=window,
+        reset_at=time.time() + int(headers["X-RateLimit-Reset"]),
+    )
+    if not allowed:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content=body.model_dump(),
+            headers=headers,
         )
-    except Exception as e:
-        logger.error(f"Error updating rule: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to update rule: {str(e)}",
-        )
+    response.headers.update(headers)
+    return body
 
 
 @app.get("/metrics", tags=["Metrics"])
 async def metrics():
-    """Prometheus metrics endpoint."""
-    return JSONResponse(content=generate_latest(get_registry()).decode("utf-8"))
-
-
-@app.get("/rules", tags=["Admin"])
-async def get_rules():
-    """Get current rate limit rules."""
-    return rate_limit_rules
+    """Prometheus metrics endpoint (text exposition format)."""
+    return Response(content=generate_latest(get_registry()), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/v1/rl/diagnostics/{client_id}", response_model=RLDiagnosticsResponse, tags=["RL"])
@@ -368,24 +347,128 @@ async def circuit_breaker_status():
     }
 
 
-# Must be registered last: Starlette matches routes in declaration order.
-@app.get("/{full_path:path}", include_in_schema=False)
-async def spa_fallback(full_path: str):
-    """SPA catch-all: serve index.html for React Router paths."""
-    # Don't intercept API or known server routes
-    if full_path.startswith(("v1/", "health", "docs", "openapi", "metrics", "circuit-breaker")):
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404)
-    index_html = os.path.join(_DIST, "index.html")
-    if os.path.isfile(index_html):
-        return FileResponse(index_html)
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="/docs")
+# ----- Admin (X-API-Key) -----------------------------------------------------
+
+admin = Depends(require_admin)
+
+
+@app.get("/v1/admin/rules", tags=["Admin"], dependencies=[admin])
+async def get_rules():
+    """Get current rate limit rules."""
+    return rate_limit_rules
+
+
+@app.post("/v1/admin/rules", response_model=RuleInfo, tags=["Admin"], dependencies=[admin])
+async def update_rule(request: UpdateRuleRequest):
+    """Create or update a client-level or endpoint-specific rule."""
+    return apply_rule(request)
+
+
+def _current_snapshot() -> Dict[str, Any]:
+    return build_snapshot(
+        rules=rate_limit_rules,
+        totals=client_totals(),
+        agent_state=get_agent().snapshot() if ENABLE_RL else {},
+        service={
+            "node": SERVICE_NAME,
+            "algorithm": ALGORITHM.value,
+            "rl_enabled": ENABLE_RL,
+            "rl_update_interval_sec": RL_UPDATE_INTERVAL,
+            "fail_mode": FAIL_MODE.value,
+            "circuit_breaker": redis_circuit_breaker.get_state(),
+        },
+    )
+
+
+async def _analysis_store() -> AnalysisStore:
+    return AnalysisStore(await get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB))
+
+
+@app.get("/v1/admin/ai/status", response_model=AnalystStatus, tags=["AI Analyst"],
+         dependencies=[admin])
+async def analyst_status(include_snapshot: bool = False):
+    """Whether the analyst is configured; optionally preview the data Claude would see."""
+    return AnalystStatus(
+        enabled=analyst.enabled,
+        model=ANALYST_MODEL if analyst.enabled else None,
+        snapshot_preview=_current_snapshot() if include_snapshot else None,
+    )
+
+
+@app.post("/v1/admin/ai/analyses", response_model=AnalysisRecord, status_code=201,
+          tags=["AI Analyst"], dependencies=[admin])
+async def create_analysis():
+    """
+    Ask Claude to analyze current traffic. Returns a summary, flagged clients, and
+    proposed rule changes; nothing changes until a recommendation is applied.
+    Limited to ANALYST_MAX_PER_HOUR runs (enforced with this service's own token bucket).
+    """
+    global _analysis_quota
+    if not analyst.enabled:
+        raise HTTPException(status_code=503, detail="AI analyst disabled: set ANTHROPIC_API_KEY")
+
+    redis_client = await get_redis_client(REDIS_HOST, REDIS_PORT, REDIS_DB)
+    _analysis_quota = _analysis_quota or TokenBucketLimiter(redis_client)
+    allowed, _, retry_after_ms = await _analysis_quota.check_limit(
+        "admin", "ai_analysis", rate=ANALYST_MAX_PER_HOUR, window=3600
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Analysis quota reached",
+            headers={"Retry-After": str(max(1, math.ceil(retry_after_ms / 1000)))},
+        )
+
+    try:
+        result = await analyst.analyze(_current_snapshot())
+    except AnalystError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    return await (await _analysis_store()).save(result)
+
+
+@app.get("/v1/admin/ai/analyses/{analysis_id}", response_model=AnalysisRecord,
+         tags=["AI Analyst"], dependencies=[admin])
+async def get_analysis(analysis_id: str):
+    record = await (await _analysis_store()).get(analysis_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Analysis not found or expired")
+    return record
+
+
+@app.post("/v1/admin/ai/analyses/{analysis_id}/recommendations/{index}/apply",
+          response_model=RuleInfo, tags=["AI Analyst"], dependencies=[admin])
+async def apply_recommendation(analysis_id: str, index: int):
+    """Apply one of Claude's proposed rule changes (human-in-the-loop approval)."""
+    store = await _analysis_store()
+    record = await store.get(analysis_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Analysis not found or expired")
+    recommendations = record["analysis"]["recommendations"]
+    if not 0 <= index < len(recommendations):
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    if record["applied"][index]:
+        raise HTTPException(status_code=409, detail="Recommendation already applied")
+
+    rec = recommendations[index]
+    try:
+        # Same validation as a manual rule change: model output is untrusted input
+        rule = UpdateRuleRequest(
+            client_id=rec["client_id"],
+            endpoint=rec["endpoint"],
+            rate=rec["rate"],
+            window=rec["window"],
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=f"Recommendation failed validation: {e}")
+
+    info = apply_rule(rule)
+    await store.mark_applied(record, index)
+    return info
 
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     uvicorn.run(
         app,
         host="0.0.0.0",

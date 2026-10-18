@@ -6,7 +6,7 @@ cycle for a client is atomic: concurrent requests hitting different limiter
 nodes are serialized by Redis and can never both spend the same budget.
 Scripts read the clock with Redis TIME rather than each node's local clock,
 so clock skew between nodes does not affect decisions. Each check is one
-network round trip (EVALSHA).
+network round trip (EVALSHA) on an asyncio Redis client.
 
 All scripts return {allowed (0/1), remaining, retry_after_ms}.
 """
@@ -14,7 +14,7 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from typing import Tuple
-from redis import Redis
+from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
 
@@ -149,16 +149,20 @@ class RateLimitAlgorithmBase(ABC):
     def _key(self, client_id: str, limit_key: str) -> str:
         return f"ratelimit:{self.KEY_PREFIX}:{client_id}:{limit_key}"
 
-    def _run(self, key: str, *args) -> Tuple[bool, int, int]:
+    async def _run(self, key: str, *args) -> Tuple[bool, int, int]:
         try:
-            allowed, remaining, retry_after_ms = self._script(keys=[key], args=list(args))
+            allowed, remaining, retry_after_ms = await self._script(keys=[key], args=list(args))
         except Exception as e:
             logger.error(f"Error in {self.KEY_PREFIX} check: {e}")
             raise
         return bool(allowed), max(0, int(remaining)), int(retry_after_ms)
 
+    def effective_limit(self, client_id: str, limit_key: str, rate: int) -> int:
+        """The limit that check_limit will enforce for this client (static here)."""
+        return rate
+
     @abstractmethod
-    def check_limit(
+    async def check_limit(
         self,
         client_id: str,
         limit_key: str,
@@ -185,8 +189,8 @@ class TokenBucketLimiter(RateLimitAlgorithmBase):
     LUA = TOKEN_BUCKET_LUA
     KEY_PREFIX = "token_bucket"
 
-    def check_limit(self, client_id, limit_key, rate, window, cost=1):
-        return self._run(self._key(client_id, limit_key), rate, window * 1000, cost)
+    async def check_limit(self, client_id, limit_key, rate, window, cost=1):
+        return await self._run(self._key(client_id, limit_key), rate, window * 1000, cost)
 
 
 class LeakyBucketLimiter(RateLimitAlgorithmBase):
@@ -200,8 +204,8 @@ class LeakyBucketLimiter(RateLimitAlgorithmBase):
     LUA = LEAKY_BUCKET_LUA
     KEY_PREFIX = "leaky_bucket"
 
-    def check_limit(self, client_id, limit_key, rate, window, cost=1):
-        return self._run(self._key(client_id, limit_key), rate, window * 1000, cost)
+    async def check_limit(self, client_id, limit_key, rate, window, cost=1):
+        return await self._run(self._key(client_id, limit_key), rate, window * 1000, cost)
 
 
 class FixedWindowLimiter(RateLimitAlgorithmBase):
@@ -214,8 +218,8 @@ class FixedWindowLimiter(RateLimitAlgorithmBase):
     LUA = FIXED_WINDOW_LUA
     KEY_PREFIX = "fixed_window"
 
-    def check_limit(self, client_id, limit_key, rate, window, cost=1):
-        return self._run(self._key(client_id, limit_key), rate, window * 1000, cost)
+    async def check_limit(self, client_id, limit_key, rate, window, cost=1):
+        return await self._run(self._key(client_id, limit_key), rate, window * 1000, cost)
 
 
 class SlidingWindowLimiter(RateLimitAlgorithmBase):
@@ -228,7 +232,7 @@ class SlidingWindowLimiter(RateLimitAlgorithmBase):
     LUA = SLIDING_WINDOW_LUA
     KEY_PREFIX = "sliding_window"
 
-    def check_limit(self, client_id, limit_key, rate, window, cost=1):
-        return self._run(
+    async def check_limit(self, client_id, limit_key, rate, window, cost=1):
+        return await self._run(
             self._key(client_id, limit_key), rate, window * 1000, cost, uuid.uuid4().hex
         )

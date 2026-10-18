@@ -3,8 +3,7 @@ Database models for persistent rate limit rules.
 """
 from datetime import datetime
 from sqlalchemy import Column, String, Integer, DateTime, JSON, Boolean, create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 import os
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ratelimiter.db")

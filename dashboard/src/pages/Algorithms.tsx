@@ -3,7 +3,7 @@ import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, L
 import { BookOpen, Zap, Clock } from 'lucide-react'
 import ChartCard from '../components/ChartCard'
 
-// Latencies measured with scripts/benchmark.py (20K checks/algorithm, Redis 7, same Docker network)
+// Latencies measured with scripts/benchmark.py (async client, 20K checks/algorithm, Redis 7, same Docker network)
 const algorithms = [
   {
     id: 'token-bucket',
@@ -11,7 +11,7 @@ const algorithms = [
     description: 'Each client has a bucket that refills continuously at rate/window tokens per second. Requests spend tokens; if too few remain, the request is denied.',
     pros: ['Allows bursts', 'Smooth refill', 'O(1) state per client'],
     cons: ['Bursts can briefly exceed average rate', 'Two parameters to reason about'],
-    latency: 0.080,
+    latency: 0.098,
     complexity: '1',
     memory: 'Low',
     accuracy: 'High',
@@ -33,7 +33,7 @@ HSET(key, 'tokens', tokens, 'ts', now)`,
     description: 'Each request pours water into a bucket that drains at a constant rate. Requests that would overflow the bucket are rejected, enforcing a smooth outflow.',
     pros: ['Smooth, constant output rate', 'O(1) state per client', 'Bounded bursts'],
     cons: ['Less tolerant of legitimate spikes', 'Full bucket recovers slowly'],
-    latency: 0.080,
+    latency: 0.097,
     complexity: '1',
     memory: 'Low',
     accuracy: 'High',
@@ -55,7 +55,7 @@ HSET(key, 'level', level, 'ts', now)`,
     description: 'Divides time into aligned windows with one counter each. A request is allowed while the counter plus its cost stays within the limit.',
     pros: ['Simplest implementation', 'O(1) operations', 'Lowest memory'],
     cons: ['Boundary spike issue', 'Up to 2x rate across a boundary'],
-    latency: 0.079,
+    latency: 0.096,
     complexity: '1',
     memory: 'Low',
     accuracy: 'Medium',
@@ -78,7 +78,7 @@ end`,
     description: 'Keeps a sorted-set log of request timestamps and counts those inside a true rolling window before admitting a request.',
     pros: ['Exact rate limiting', 'No boundary spikes', 'Blocked requests cost nothing'],
     cons: ['Memory grows with request rate', 'O(log N) per operation'],
-    latency: 0.083,
+    latency: 0.101,
     complexity: 'log N',
     memory: 'High',
     accuracy: 'Very High',
@@ -108,10 +108,10 @@ const comparisonData = [
 
 // Measured per-decision latency (ms)
 const latencyComparison = [
-  { algorithm: 'Token Bucket', p50: 0.080, p95: 0.102, p99: 0.123 },
-  { algorithm: 'Leaky Bucket', p50: 0.080, p95: 0.096, p99: 0.145 },
-  { algorithm: 'Fixed Window', p50: 0.079, p95: 0.091, p99: 0.106 },
-  { algorithm: 'Sliding Window', p50: 0.083, p95: 0.093, p99: 0.106 },
+  { algorithm: 'Token Bucket', p50: 0.098, p95: 0.142, p99: 0.286 },
+  { algorithm: 'Leaky Bucket', p50: 0.097, p95: 0.111, p99: 0.131 },
+  { algorithm: 'Fixed Window', p50: 0.096, p95: 0.11, p99: 0.13 },
+  { algorithm: 'Sliding Window', p50: 0.101, p95: 0.118, p99: 0.171 },
 ]
 
 export default function Algorithms() {

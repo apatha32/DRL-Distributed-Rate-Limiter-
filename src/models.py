@@ -2,15 +2,21 @@
 Request and response models for the rate limiter API.
 """
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Any, Dict, List, Optional
+
+from src.analyst import TrafficAnalysis
+
+ID_PATTERN = r"^[A-Za-z0-9_.:@/-]+$"
 
 
 class CheckLimitRequest(BaseModel):
     """Request to check if a request should be allowed."""
     
-    client_id: str = Field(..., description="Unique client identifier")
-    limit_key: str = Field(default="global", description="Optional endpoint/resource name")
-    cost: int = Field(default=1, ge=1, description="Token cost for this request")
+    client_id: str = Field(..., min_length=1, max_length=128, pattern=ID_PATTERN,
+                           description="Unique client identifier")
+    limit_key: str = Field(default="global", min_length=1, max_length=128, pattern=ID_PATTERN,
+                           description="Optional endpoint/resource name")
+    cost: int = Field(default=1, ge=1, le=10_000, description="Token cost for this request")
 
 
 class CheckLimitResponse(BaseModel):
@@ -30,10 +36,12 @@ class CheckLimitResponse(BaseModel):
 class UpdateRuleRequest(BaseModel):
     """Request to update a rate limit rule."""
     
-    client_id: str = Field(..., description="Client identifier")
-    rate: int = Field(..., ge=1, description="Requests per window")
-    window: int = Field(..., ge=1, description="Window size in seconds")
-    endpoint: Optional[str] = Field(default=None, description="Specific endpoint (optional)")
+    client_id: str = Field(..., min_length=1, max_length=128, pattern=ID_PATTERN,
+                           description="Client identifier")
+    rate: int = Field(..., ge=1, le=1_000_000, description="Requests per window")
+    window: int = Field(..., ge=1, le=86_400, description="Window size in seconds")
+    endpoint: Optional[str] = Field(default=None, max_length=128, pattern=ID_PATTERN,
+                                    description="Specific endpoint (optional)")
 
 
 class RuleInfo(BaseModel):
@@ -64,3 +72,20 @@ class RLDiagnosticsResponse(BaseModel):
     block_ratio: Optional[float] = None
     rps_delta: Optional[float] = None
     total_requests_window: Optional[int] = None
+
+
+class AnalysisRecord(BaseModel):
+    """A stored AI traffic analysis."""
+
+    id: str
+    created_at: float
+    model: str
+    usage: Dict[str, int]
+    analysis: TrafficAnalysis
+    applied: List[bool] = Field(description="Whether each recommendation has been applied")
+
+
+class AnalystStatus(BaseModel):
+    enabled: bool
+    model: Optional[str] = None
+    snapshot_preview: Optional[Dict[str, Any]] = None

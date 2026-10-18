@@ -36,13 +36,11 @@ class RateLimiterUser(HttpUser):
             self.request_count += 1
             
             if response.status_code == 200:
-                data = response.json()
-                if data.get("allowed"):
-                    self.allowed_count += 1
-                    response.success()
-                else:
-                    self.blocked_count += 1
-                    response.success()  # Expected behavior
+                self.allowed_count += 1
+                response.success()
+            elif response.status_code == 429:
+                self.blocked_count += 1
+                response.success()  # Rate limited: expected behavior
             else:
                 response.failure(f"Status {response.status_code}")
     
@@ -60,7 +58,7 @@ class RateLimiterUser(HttpUser):
             json=payload,
             catch_response=True,
         ) as response:
-            if response.status_code == 200:
+            if response.status_code in (200, 429):
                 response.success()
             else:
                 response.failure(f"Status {response.status_code}")

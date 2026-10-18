@@ -1,0 +1,8 @@
+# Test / tooling dependencies (CI and local development)
+-r requirements.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1
+fakeredis[lua]==2.40.0
+locust==2.46.7
+testcontainers[redis,postgres]==4.15.0

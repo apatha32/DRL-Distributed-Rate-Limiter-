@@ -1,76 +1,50 @@
 """
-Distributed tracing setup with OpenTelemetry and Jaeger.
+Distributed tracing with OpenTelemetry (OTLP export).
+
+Enabled when OTEL_EXPORTER_OTLP_ENDPOINT is set, e.g. http://jaeger:4317 for
+the local docker-compose Jaeger, or any OTLP-compatible backend in production.
+The exporter also honours the other standard OTEL_EXPORTER_OTLP_* variables.
 """
 import logging
-from opentelemetry import trace, metrics
+import os
+
+from opentelemetry import trace
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.jaeger.thrift import JaegerExporter
-from opentelemetry.sdk.resources import SERVICE_NAME, Resource
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.redis import RedisInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-import os
 
 logger = logging.getLogger(__name__)
 
 
+def tracing_enabled() -> bool:
+    return bool(os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+
+
 def init_tracing(service_name: str = "rate-limiter"):
-    """
-    Initialize OpenTelemetry tracing with Jaeger exporter.
-    
-    Args:
-        service_name: Service name for tracing
-    """
-    jaeger_enabled = os.getenv("JAEGER_ENABLED", "false").lower() == "true"
-    jaeger_host = os.getenv("JAEGER_HOST", "localhost")
-    jaeger_port = int(os.getenv("JAEGER_PORT", 6831))
-    
-    if not jaeger_enabled:
-        logger.info("Jaeger tracing disabled")
+    """Install a global tracer provider that exports spans over OTLP/gRPC."""
+    if not tracing_enabled():
+        logger.info("Tracing disabled (OTEL_EXPORTER_OTLP_ENDPOINT not set)")
         return
-    
-    try:
-        # Create Jaeger exporter
-        jaeger_exporter = JaegerExporter(
-            agent_host_name=jaeger_host,
-            agent_port=jaeger_port,
-        )
-        
-        # Create trace provider with resource
-        resource = Resource(attributes={SERVICE_NAME: service_name})
-        trace_provider = TracerProvider(resource=resource)
-        trace_provider.add_span_processor(
-            BatchSpanProcessor(jaeger_exporter)
-        )
-        
-        # Set global trace provider
-        trace.set_tracer_provider(trace_provider)
-        
-        logger.info(f"Jaeger tracing initialized: {jaeger_host}:{jaeger_port}")
-    except Exception as e:
-        logger.error(f"Failed to initialize Jaeger: {e}")
-        raise
+
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+
+    provider = TracerProvider(resource=Resource(attributes={SERVICE_NAME: service_name}))
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    trace.set_tracer_provider(provider)
+    logger.info("Tracing initialized: %s", os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 
 def instrument_app(app):
-    """
-    Instrument FastAPI app with OpenTelemetry.
-    
-    Args:
-        app: FastAPI application instance
-    """
-    try:
-        # Instrument FastAPI
-        FastAPIInstrumentor.instrument_app(app)
-        
-        # Instrument Redis
-        RedisInstrumentor().instrument()
-        
-        logger.info("OpenTelemetry instrumentation complete")
-    except Exception as e:
-        logger.error(f"Failed to instrument app: {e}")
-        raise
+    """Instrument FastAPI and Redis calls when tracing is enabled."""
+    if not tracing_enabled():
+        return
+
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.redis import RedisInstrumentor
+
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="health,metrics")
+    RedisInstrumentor().instrument()
+    logger.info("OpenTelemetry instrumentation complete")
 
 
 def get_tracer(name: str = "rate-limiter"):

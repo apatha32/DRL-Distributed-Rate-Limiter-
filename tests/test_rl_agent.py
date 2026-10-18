@@ -7,7 +7,7 @@ import pytest
 
 from src import rl_agent
 from src.rl_agent import RLAgent, UPDATE_INTERVAL
-from src.adaptive_limiter import RLAdaptiveLimiter
+from src.adaptive_limiter import RLAdaptiveLimiter, agent_key
 from src.algorithms import TokenBucketLimiter
 
 
@@ -86,12 +86,46 @@ def test_q_table_learns_from_reward(monkeypatch):
     assert agent._current_limits["c1"] != 100
 
 
-def test_adaptive_limiter_enforces_rl_limit_and_feeds_agent():
-    limiter = RLAdaptiveLimiter(TokenBucketLimiter(fakeredis.FakeRedis(decode_responses=True)))
+async def test_adaptive_limiter_enforces_rl_limit_and_feeds_agent():
+    limiter = RLAdaptiveLimiter(TokenBucketLimiter(fakeredis.FakeAsyncRedis(decode_responses=True)))
     agent = limiter._agent
     agent.get_limit("rl-client", base_limit=20)
     agent._current_limits["rl-client"] = 5   # agent decided to tighten
 
-    results = [limiter.check_limit("rl-client", "global", rate=20, window=60)[0] for _ in range(8)]
+    assert limiter.effective_limit("rl-client", "global", rate=20) == 5
+    results = [
+        (await limiter.check_limit("rl-client", "global", rate=20, window=60))[0]
+        for _ in range(8)
+    ]
     assert results.count(True) == 5
     assert agent._stats["rl-client"].blocked == 3
+
+
+async def test_endpoint_limits_are_learned_independently():
+    limiter = RLAdaptiveLimiter(TokenBucketLimiter(fakeredis.FakeAsyncRedis(decode_responses=True)))
+    assert limiter.effective_limit("ep-client", "global", rate=100) == 100
+    assert limiter.effective_limit("ep-client", "login", rate=20) == 20
+    assert agent_key("ep-client", "login") == "ep-client/login"
+
+
+def test_operator_rule_change_resets_learned_limit():
+    agent = RLAgent()
+    agent.get_limit("c1", base_limit=100)
+    agent._current_limits["c1"] = 140
+    agent.set_base_limit("c1", 50)
+    assert agent.get_limit("c1", base_limit=100) == 50
+
+
+def test_decisions_are_recorded_for_analysis():
+    agent = RLAgent()
+    agent.get_limit("c1", base_limit=100)
+    for i in range(50):
+        agent.observe("c1", allowed=i < 45)
+    _age_window(agent, "c1", UPDATE_INTERVAL)
+    agent.step_all()
+
+    (decision,) = agent.get_history("c1")
+    assert decision["requests"] == 50
+    assert decision["block_ratio"] == pytest.approx(0.1)
+    assert decision["action"] in ("decrease", "keep", "increase")
+    assert agent.snapshot()["c1"]["recent_decisions"] == [decision]

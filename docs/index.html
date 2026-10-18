@@ -617,28 +617,28 @@
         <td>Tokens refill continuously at a fixed rate. Each request consumes one or more tokens. Unused tokens accumulate up to the bucket capacity.</td>
         <td>High. Accumulated tokens permit temporary spikes.</td>
         <td>1 hash per client</td>
-        <td><span class="latency-badge">0.08ms</span></td>
+        <td><span class="latency-badge">0.10ms</span></td>
       </tr>
       <tr>
         <td>Leaky Bucket</td>
         <td>Each request adds water to a bucket that drains at a constant rate. Requests that would overflow it are rejected, enforcing a smooth outflow.</td>
         <td>Bounded. Up to the bucket size, then a steady rate.</td>
         <td>1 hash per client</td>
-        <td><span class="latency-badge">0.08ms</span></td>
+        <td><span class="latency-badge">0.10ms</span></td>
       </tr>
       <tr>
         <td>Fixed Window</td>
         <td>Time is divided into discrete windows. A counter increments per request and resets at the window boundary.</td>
         <td>Moderate. Double-rate bursts are possible at boundaries.</td>
         <td>1 hash per client</td>
-        <td><span class="latency-badge">0.08ms</span></td>
+        <td><span class="latency-badge">0.10ms</span></td>
       </tr>
       <tr>
         <td>Sliding Window</td>
         <td>Keeps a sorted-set log of request timestamps and counts those inside a true rolling window. Eliminates the boundary spike problem.</td>
         <td>Low. Accurate continuous enforcement.</td>
         <td>1 sorted set per client</td>
-        <td><span class="latency-badge">0.08ms</span></td>
+        <td><span class="latency-badge">0.10ms</span></td>
       </tr>
     </tbody>
   </table>
