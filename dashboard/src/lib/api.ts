@@ -2,7 +2,14 @@ import axios from 'axios'
 
 // Default: same-origin calls. In dev Vite proxies /v1 and /health to :8000; on Vercel,
 // dashboard/vercel.json rewrites them to the Railway API. VITE_API_URL overrides both.
-export const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
+export const API_BASE = normalizeApiBase(import.meta.env.VITE_API_URL)
+
+/** "api.example.com/" → "https://api.example.com". Without a scheme the browser would treat it as a path. */
+export function normalizeApiBase(value: string | undefined): string {
+  const v = (value ?? '').trim().replace(/\/+$/, '')
+  if (!v) return ''
+  return /^https?:\/\//i.test(v) ? v : `https://${v}`
+}
 
 export class ApiNotConnectedError extends Error {
   constructor() {

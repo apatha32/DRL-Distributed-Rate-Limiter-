@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ApiNotConnectedError, errorMessage, requireJson } from './api'
+import { ApiNotConnectedError, errorMessage, normalizeApiBase, requireJson } from './api'
 
 describe('requireJson', () => {
   it('passes JSON API responses through', () => {
@@ -15,5 +15,15 @@ describe('requireJson', () => {
     } catch (err) {
       expect(errorMessage(err)).toMatch(/VITE_API_URL/)
     }
+  })
+})
+
+describe('normalizeApiBase', () => {
+  it('adds https:// when the scheme is missing and trims trailing slashes', () => {
+    expect(normalizeApiBase('drl-production.up.railway.app')).toBe('https://drl-production.up.railway.app')
+    expect(normalizeApiBase(' https://api.example.com/ ')).toBe('https://api.example.com')
+    expect(normalizeApiBase('http://localhost:8000')).toBe('http://localhost:8000')
+    expect(normalizeApiBase('')).toBe('')
+    expect(normalizeApiBase(undefined)).toBe('')
   })
 })
